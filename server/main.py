@@ -12,12 +12,13 @@ from datetime import datetime, time as dt_time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
+import jwt
 
 from server.config import settings, get_log_path
 from server.database import init_db, close_db, async_session_maker, Base, engine
@@ -34,6 +35,7 @@ from server.routers import (
 )
 from server.models import UserRole, User
 from server.services.backup_service import BackupService
+from server.services.websocket_manager import ws_manager
 
 # ============== Configuration du logging ==============
 
@@ -519,6 +521,92 @@ def format_uptime(seconds: int) -> str:
     parts.append(f"{secs}s")
 
     return " ".join(parts)
+
+
+# ============== WebSocket pour synchronisation temps réel ==============
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    """
+    Endpoint WebSocket pour la synchronisation temps réel.
+
+    Les clients doivent fournir leur token JWT en paramètre de query string:
+    ws://server/ws?token=<jwt_token>
+    """
+    # Vérifier le token
+    username = "anonymous"
+
+    if token:
+        try:
+            payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+            username = payload.get("sub", "anonymous")
+        except jwt.ExpiredSignatureError:
+            await websocket.close(code=4001, reason="Token expiré")
+            return
+        except jwt.InvalidTokenError:
+            await websocket.close(code=4002, reason="Token invalide")
+            return
+    else:
+        # Permettre connexion anonyme pour le monitoring basique
+        pass
+
+    # Connecter le client
+    client_id = await ws_manager.connect(websocket, username)
+
+    try:
+        # Envoyer un message de bienvenue
+        await websocket.send_json({
+            "type": "welcome",
+            "message": f"Connecté en tant que {username}",
+            "client_id": client_id,
+            "connected_users": await ws_manager.get_connected_users()
+        })
+
+        # Boucle de réception des messages
+        while True:
+            try:
+                data = await websocket.receive_json()
+
+                # Traiter les différents types de messages
+                msg_type = data.get("type", "")
+
+                if msg_type == "ping":
+                    # Répondre au ping pour maintenir la connexion
+                    await websocket.send_json({"type": "pong"})
+
+                elif msg_type == "get_users":
+                    # Renvoyer la liste des utilisateurs connectés
+                    await websocket.send_json({
+                        "type": "connected_users",
+                        "users": await ws_manager.get_connected_users()
+                    })
+
+                elif msg_type == "broadcast":
+                    # Permettre aux clients de diffuser des messages personnalisés
+                    # (par exemple pour le chat ou les notifications)
+                    await ws_manager.broadcast("user_message", {
+                        "from": username,
+                        "message": data.get("message", "")
+                    }, exclude_client=client_id)
+
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"Erreur WebSocket pour {username}: {e}")
+                break
+
+    finally:
+        await ws_manager.disconnect(client_id)
+
+
+@app.get("/ws/status")
+async def websocket_status():
+    """Statut des connexions WebSocket"""
+    return {
+        "connected_clients": ws_manager.connected_count,
+        "connected_users": ws_manager.connected_users_count,
+        "users": await ws_manager.get_connected_users()
+    }
 
 
 # ============== Point d'entrée ==============
