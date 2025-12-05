@@ -52,6 +52,12 @@ class User(Base):
     display_name: Mapped[Optional[str]] = mapped_column(String(255))
     email: Mapped[Optional[str]] = mapped_column(String(255))
 
+    # Authentification par mot de passe (obligatoire pour accès Internet)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)  # Forcer changement au 1er login
+    failed_login_attempts: Mapped[int] = mapped_column(default=0)  # Compteur tentatives échouées
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime)  # Verrouillage temporaire
+
     # Statut
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_system_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # Admin système (peut tout faire)

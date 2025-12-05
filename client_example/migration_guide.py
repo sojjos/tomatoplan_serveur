@@ -32,12 +32,21 @@ from datetime import date
 
 
 # Initialisation au démarrage de l'application
-def setup_api_connection(server_url: str = "http://localhost:8000"):
+def setup_api_connection(
+    server_url: str = "https://votre-serveur.example.com",
+    password: str = None,
+    verify_ssl: bool = True
+):
     """
     À appeler au démarrage de l'application.
     Configure la connexion au serveur et authentifie l'utilisateur.
+
+    Args:
+        server_url: URL du serveur (HTTPS obligatoire pour Internet)
+        password: Mot de passe (demandé interactivement si non fourni)
+        verify_ssl: Vérifier le certificat SSL (False pour auto-signé)
     """
-    client = init_client(server_url)
+    client = init_client(server_url, password=password, verify_ssl=verify_ssl)
     return client
 
 
@@ -89,22 +98,32 @@ class TransportPlannerAppMigrated:
 
     Modifications principales:
     1. Remplacer les appels load_json/save_json par des appels API
-    2. Ajouter la gestion de connexion au démarrage
+    2. Ajouter la gestion de connexion au démarrage avec mot de passe
     3. Gérer les erreurs réseau
+    4. Supporter HTTPS pour serveur Internet
     """
 
-    def __init__(self, server_url: str = "http://localhost:8000"):
-        # Connexion au serveur
-        self.client = TomatoPlanClient(server_url)
+    def __init__(
+        self,
+        server_url: str = "https://votre-serveur.example.com",
+        password: str = None,
+        verify_ssl: bool = True
+    ):
+        # Connexion au serveur (HTTPS obligatoire pour Internet)
+        self.client = TomatoPlanClient(server_url, verify_ssl=verify_ssl)
 
         # Vérifier la connexion
         server_status = self.client.check_server()
         if server_status.get("status") != "healthy":
             raise ConnectionError("Serveur inaccessible")
 
-        # Authentification automatique avec l'utilisateur Windows
-        if not self.client.login():
+        # Authentification avec mot de passe
+        if not self.client.login(password=password):
             raise PermissionError("Authentification refusée")
+
+        # Vérifier si changement de mot de passe requis
+        if self.client.must_change_password:
+            print("⚠️  Vous devez changer votre mot de passe temporaire.")
 
         # Stocker les infos utilisateur
         self.current_user = self.client.user_info
@@ -210,8 +229,15 @@ if __name__ == "__main__":
     print("=== Test de migration ===\n")
 
     try:
+        # Configuration serveur Internet (HTTPS obligatoire)
+        SERVER_URL = "https://votre-serveur.example.com"
+        # Pour développement local :
+        # SERVER_URL = "http://localhost:8000"
+
         # Créer l'application migrée
-        app = TransportPlannerAppMigrated("http://localhost:8000")
+        # Le mot de passe sera demandé interactivement
+        # verify_ssl=False si vous utilisez un certificat auto-signé
+        app = TransportPlannerAppMigrated(SERVER_URL, verify_ssl=True)
 
         print(f"Connecté en tant que: {app.current_user.get('username')}")
         print(f"Rôle: {app.current_user.get('role')}")
