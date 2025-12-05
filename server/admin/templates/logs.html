@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - TomatoPlan Admin{% endblock %}
+
+{% block content %}
+<div class="admin-page">
+    <div class="page-header">
+        <h1>Logs d'Activité (SAURON)</h1>
+        <button class="btn" onclick="loadLogs()">Rafraîchir</button>
+    </div>
+
+    <div class="filters">
+        <div class="filter-group">
+            <label>Utilisateur</label>
+            <input type="text" id="filter-user" placeholder="Tous">
+        </div>
+        <div class="filter-group">
+            <label>Action</label>
+            <select id="filter-action">
+                <option value="">Toutes</option>
+                <option value="LOGIN">Connexion</option>
+                <option value="LOGOUT">Déconnexion</option>
+                <option value="CREATE">Création</option>
+                <option value="UPDATE">Modification</option>
+                <option value="DELETE">Suppression</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Date début</label>
+            <input type="date" id="filter-date-start">
+        </div>
+        <div class="filter-group">
+            <label>Date fin</label>
+            <input type="date" id="filter-date-end">
+        </div>
+        <button class="btn btn-primary" onclick="loadLogs()">Filtrer</button>
+    </div>
+
+    <div class="log-stats">
+        <span id="log-count">-</span> entrées
+    </div>
+
+    <table class="table" id="logs-table">
+        <thead>
+            <tr>
+                <th>Date/Heure</th>
+                <th>Utilisateur</th>
+                <th>Action</th>
+                <th>Entité</th>
+                <th>ID</th>
+                <th>IP Client</th>
+                <th>Détails</th>
+            </tr>
+        </thead>
+        <tbody id="logs-body">
+            <tr><td colspan="7">Chargement...</td></tr>
+        </tbody>
+    </table>
+
+    <div class="pagination">
+        <button class="btn" id="btn-prev" onclick="prevPage()" disabled>Précédent</button>
+        <span id="page-info">Page 1</span>
+        <button class="btn" id="btn-next" onclick="nextPage()">Suivant</button>
+    </div>
+</div>
+
+<style>
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.filters { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; align-items: flex-end; }
+.filter-group { display: flex; flex-direction: column; gap: 5px; }
+.filter-group label { font-size: 12px; color: #7f8c8d; }
+.filter-group input, .filter-group select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+.log-stats { margin-bottom: 10px; color: #7f8c8d; }
+.pagination { display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 20px; }
+.badge { padding: 3px 8px; border-radius: 3px; font-size: 11px; color: white; }
+.badge-LOGIN { background: #27ae60; }
+.badge-LOGOUT { background: #3498db; }
+.badge-CREATE { background: #9b59b6; }
+.badge-UPDATE { background: #f39c12; }
+.badge-DELETE { background: #e74c3c; }
+.badge-LOGIN_FAILED { background: #c0392b; }
+.details-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #7f8c8d; }
+</style>
+
+<script>
+let currentPage = 1;
+const pageSize = 50;
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (!isAuthenticated()) {
+        window.location.href = '/admin/login';
+        return;
+    }
+
+    // Définir dates par défaut (7 derniers jours)
+    const today = new Date();
+    const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    document.getElementById('filter-date-end').value = today.toISOString().split('T')[0];
+    document.getElementById('filter-date-start').value = lastWeek.toISOString().split('T')[0];
+
+    loadLogs();
+});
+
+async function loadLogs() {
+    const user = document.getElementById('filter-user').value;
+    const action = document.getElementById('filter-action').value;
+    const dateStart = document.getElementById('filter-date-start').value;
+    const dateEnd = document.getElementById('filter-date-end').value;
+
+    let endpoint = `/admin/logs?limit=${pageSize}&offset=${(currentPage - 1) * pageSize}`;
+    if (user) endpoint += `&username=${user}`;
+    if (action) endpoint += `&action_type=${action}`;
+    if (dateStart) endpoint += `&date_start=${dateStart}`;
+    if (dateEnd) endpoint += `&date_end=${dateEnd}`;
+
+    try {
+        const result = await apiCall(endpoint);
+        const logs = result.logs || result;
+        const total = result.total || logs.length;
+
+        document.getElementById('log-count').textContent = total;
+
+        const tbody = document.getElementById('logs-body');
+
+        if (logs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7">Aucun log trouvé</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = logs.map(l => `
+            <tr>
+                <td>${formatDate(l.created_at)}</td>
+                <td><strong>${l.username}</strong></td>
+                <td><span class="badge badge-${l.action_type}">${l.action_type}</span></td>
+                <td>${l.entity_type || '-'}</td>
+                <td>${l.entity_id || '-'}</td>
+                <td>${l.client_ip || '-'}</td>
+                <td class="details-cell" title="${l.details || ''}">${l.details || '-'}</td>
+            </tr>
+        `).join('');
+
+        // Mise à jour pagination
+        document.getElementById('page-info').textContent = `Page ${currentPage}`;
+        document.getElementById('btn-prev').disabled = currentPage === 1;
+        document.getElementById('btn-next').disabled = logs.length < pageSize;
+
+    } catch (error) {
+        console.error('Erreur:', error);
+    }
+}
+
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadLogs();
+    }
+}
+
+function nextPage() {
+    currentPage++;
+    loadLogs();
+}
+</script>
+{% endblock %}

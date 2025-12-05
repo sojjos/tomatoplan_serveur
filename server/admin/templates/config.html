@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration - TomatoPlan Admin{% endblock %}
+
+{% block content %}
+<div class="admin-page">
+    <div class="page-header">
+        <h1>Configuration Serveur</h1>
+    </div>
+
+    <div class="config-sections">
+        <!-- Informations serveur -->
+        <section class="config-section">
+            <h2>Informations Serveur</h2>
+            <div class="config-grid">
+                <div class="config-item">
+                    <label>Nom de l'application</label>
+                    <span id="app-name">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Version</label>
+                    <span id="app-version">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Adresse</label>
+                    <span id="server-address">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Uptime</label>
+                    <span id="uptime">-</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Actions serveur -->
+        <section class="config-section">
+            <h2>Actions Serveur</h2>
+            <div class="actions-grid">
+                <button class="action-btn" onclick="restartService()">
+                    <span class="icon">🔄</span>
+                    <span class="label">Redémarrer le service</span>
+                </button>
+                <button class="action-btn" onclick="clearCache()">
+                    <span class="icon">🗑️</span>
+                    <span class="label">Vider le cache</span>
+                </button>
+                <button class="action-btn" onclick="cleanupLogs()">
+                    <span class="icon">📄</span>
+                    <span class="label">Nettoyer les logs</span>
+                </button>
+                <button class="action-btn" onclick="cleanupBackups()">
+                    <span class="icon">💾</span>
+                    <span class="label">Nettoyer anciens backups</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- Terminal / Commandes -->
+        <section class="config-section">
+            <h2>Commandes Serveur</h2>
+            <p class="info-text">Commandes SSH utiles pour administrer le serveur :</p>
+
+            <div class="command-list">
+                <div class="command-item">
+                    <code>sudo systemctl status tomatoplan</code>
+                    <span class="desc">Voir le statut du service</span>
+                </div>
+                <div class="command-item">
+                    <code>sudo systemctl restart tomatoplan</code>
+                    <span class="desc">Redémarrer le service</span>
+                </div>
+                <div class="command-item">
+                    <code>sudo journalctl -u tomatoplan -f</code>
+                    <span class="desc">Voir les logs en temps réel</span>
+                </div>
+                <div class="command-item">
+                    <code>sudo journalctl -u tomatoplan | grep ERROR</code>
+                    <span class="desc">Voir les erreurs</span>
+                </div>
+                <div class="command-item">
+                    <code>sudo nginx -t && sudo systemctl reload nginx</code>
+                    <span class="desc">Recharger nginx</span>
+                </div>
+                <div class="command-item">
+                    <code>df -h</code>
+                    <span class="desc">Espace disque</span>
+                </div>
+                <div class="command-item">
+                    <code>free -h</code>
+                    <span class="desc">Mémoire disponible</span>
+                </div>
+            </div>
+
+            <div class="ssh-info">
+                <h3>Connexion SSH</h3>
+                <code id="ssh-command">ssh root@54.37.231.92</code>
+                <button class="btn btn-sm" onclick="copySSH()">Copier</button>
+            </div>
+        </section>
+
+        <!-- Statistiques système -->
+        <section class="config-section">
+            <h2>Statistiques Système</h2>
+            <div class="config-grid">
+                <div class="config-item">
+                    <label>Base de données</label>
+                    <span id="db-size">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Logs</label>
+                    <span id="logs-size">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Backups</label>
+                    <span id="backups-size">-</span>
+                </div>
+                <div class="config-item">
+                    <label>Requêtes aujourd'hui</label>
+                    <span id="requests-today">-</span>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<style>
+.page-header { margin-bottom: 30px; }
+.config-sections { display: flex; flex-direction: column; gap: 25px; }
+.config-section { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.config-section h2 { margin: 0 0 20px 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+.config-item { display: flex; flex-direction: column; }
+.config-item label { font-size: 12px; color: #7f8c8d; margin-bottom: 5px; }
+.config-item span { font-weight: 600; color: #2c3e50; }
+.actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
+.action-btn { display: flex; flex-direction: column; align-items: center; padding: 20px; border: 2px solid #ddd; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.2s; }
+.action-btn:hover { border-color: #3498db; background: #ecf0f1; }
+.action-btn .icon { font-size: 28px; margin-bottom: 10px; }
+.action-btn .label { font-size: 14px; color: #2c3e50; }
+.info-text { color: #7f8c8d; margin-bottom: 15px; }
+.command-list { display: flex; flex-direction: column; gap: 10px; }
+.command-item { display: flex; align-items: center; gap: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+.command-item code { background: #2c3e50; color: #27ae60; padding: 8px 12px; border-radius: 4px; font-size: 13px; flex: 1; }
+.command-item .desc { color: #7f8c8d; font-size: 13px; min-width: 200px; }
+.ssh-info { margin-top: 20px; padding: 15px; background: #2c3e50; border-radius: 8px; display: flex; align-items: center; gap: 15px; }
+.ssh-info h3 { color: white; margin: 0; font-size: 14px; }
+.ssh-info code { background: #1a252f; color: #27ae60; padding: 10px 15px; border-radius: 4px; flex: 1; }
+.ssh-info .btn { background: #27ae60; color: white; border: none; }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    if (!isAuthenticated()) {
+        window.location.href = '/admin/login';
+        return;
+    }
+    loadConfig();
+});
+
+async function loadConfig() {
+    try {
+        // Infos serveur
+        const serverInfo = await apiCall('/server-info');
+        document.getElementById('app-name').textContent = serverInfo.name;
+        document.getElementById('app-version').textContent = serverInfo.version;
+        document.getElementById('server-address').textContent = `${serverInfo.host}:${serverInfo.port}`;
+        document.getElementById('uptime').textContent = serverInfo.uptime_formatted;
+
+        // Stats
+        const stats = await apiCall('/stats/dashboard');
+        document.getElementById('db-size').textContent = stats.database?.size_formatted || '-';
+        document.getElementById('requests-today').textContent = stats.api?.requests_today || '0';
+
+    } catch (error) {
+        console.error('Erreur:', error);
+    }
+}
+
+async function restartService() {
+    if (!confirm('Redémarrer le service TomatoPlan ? Les utilisateurs seront temporairement déconnectés.')) return;
+
+    try {
+        await apiCall('/admin/server/restart', 'POST');
+        showToast('Redémarrage en cours...', 'info');
+        setTimeout(() => {
+            window.location.reload();
+        }, 5000);
+    } catch (error) {
+        alert('Erreur: ' + error.message);
+    }
+}
+
+async function clearCache() {
+    try {
+        await apiCall('/admin/server/clear-cache', 'POST');
+        showToast('Cache vidé', 'success');
+    } catch (error) {
+        alert('Erreur: ' + error.message);
+    }
+}
+
+async function cleanupLogs() {
+    if (!confirm('Supprimer les logs de plus de 30 jours ?')) return;
+
+    try {
+        const result = await apiCall('/admin/server/cleanup-logs', 'POST');
+        showToast(`${result.deleted || 0} entrées supprimées`, 'success');
+    } catch (error) {
+        alert('Erreur: ' + error.message);
+    }
+}
+
+async function cleanupBackups() {
+    if (!confirm('Supprimer les backups de plus de 30 jours ?')) return;
+
+    try {
+        const result = await apiCall('/admin/server/cleanup-backups', 'POST');
+        showToast(`${result.deleted || 0} backups supprimés`, 'success');
+    } catch (error) {
+        alert('Erreur: ' + error.message);
+    }
+}
+
+function copySSH() {
+    const cmd = document.getElementById('ssh-command').textContent;
+    navigator.clipboard.writeText(cmd);
+    showToast('Commande SSH copiée', 'success');
+}
+</script>
+{% endblock %}
