@@ -444,3 +444,176 @@ async def get_server_config(
         "auto_backup_enabled": settings.auto_backup_enabled,
         "auto_backup_hour": settings.auto_backup_hour
     }
+
+
+# ============== Sessions avancées ==============
+
+@router.post("/sessions/{session_id}/kick")
+async def kick_session_by_id(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("manage_rights"))
+):
+    """Déconnecte une session spécifique par son ID"""
+    result = await db.execute(
+        select(UserSession).where(UserSession.session_id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session non trouvée"
+        )
+
+    username = session.user.username if session.user else "unknown"
+    await db.delete(session)
+
+    # Logger l'action
+    log_entry = ActivityLog(
+        username=current_user.username,
+        action_type="SESSION_KICK",
+        details={"kicked_user": username, "session_id": session_id}
+    )
+    db.add(log_entry)
+    await db.commit()
+
+    return {"success": True, "message": f"Session de {username} terminée"}
+
+
+@router.post("/sessions/kick-all")
+async def kick_all_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("admin_access"))
+):
+    """Déconnecte toutes les sessions (sauf l'admin actuel)"""
+    if not current_user.is_system_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Seul un admin système peut déconnecter tout le monde"
+        )
+
+    # Supprimer toutes les sessions
+    result = await db.execute(select(UserSession))
+    sessions = result.scalars().all()
+    count = len(sessions)
+
+    for session in sessions:
+        await db.delete(session)
+
+    # Logger l'action
+    log_entry = ActivityLog(
+        username=current_user.username,
+        action_type="SESSION_KICK_ALL",
+        details={"sessions_closed": count}
+    )
+    db.add(log_entry)
+    await db.commit()
+
+    return {"success": True, "message": f"{count} session(s) fermée(s)"}
+
+
+# ============== Reset password ==============
+
+@router.post("/users/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("manage_rights"))
+):
+    """Réinitialise le mot de passe d'un utilisateur"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utilisateur non trouvé"
+        )
+
+    # Générer un nouveau mot de passe temporaire
+    temp_password = AuthService.generate_temp_password()
+    user.password_hash = AuthService.hash_password(temp_password)
+    user.must_change_password = True
+    user.failed_login_attempts = 0
+    user.locked_until = None
+
+    # Logger l'action
+    log_entry = ActivityLog(
+        username=current_user.username,
+        action_type="PASSWORD_RESET",
+        entity_type="user",
+        entity_id=user_id,
+        details={"target_user": user.username}
+    )
+    db.add(log_entry)
+    await db.commit()
+
+    return {
+        "success": True,
+        "temp_password": temp_password,
+        "message": f"Mot de passe de {user.username} réinitialisé"
+    }
+
+
+# ============== Logs ==============
+
+@router.get("/logs")
+async def get_activity_logs(
+    limit: int = Query(50, le=500),
+    offset: int = Query(0),
+    username: Optional[str] = None,
+    action_type: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("view_sauron"))
+):
+    """Récupère les logs d'activité avec filtres"""
+    from datetime import datetime
+
+    query = select(ActivityLog).order_by(ActivityLog.created_at.desc())
+
+    if username:
+        query = query.where(ActivityLog.username.ilike(f"%{username}%"))
+    if action_type:
+        query = query.where(ActivityLog.action_type == action_type)
+    if date_start:
+        start = datetime.fromisoformat(date_start)
+        query = query.where(ActivityLog.created_at >= start)
+    if date_end:
+        end = datetime.fromisoformat(date_end + "T23:59:59")
+        query = query.where(ActivityLog.created_at <= end)
+
+    # Total count
+    from sqlalchemy import func
+    count_query = select(func.count()).select_from(ActivityLog)
+    if username:
+        count_query = count_query.where(ActivityLog.username.ilike(f"%{username}%"))
+    if action_type:
+        count_query = count_query.where(ActivityLog.action_type == action_type)
+
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginated results
+    query = query.offset(offset).limit(limit)
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return {
+        "total": total,
+        "logs": [
+            {
+                "id": log.id,
+                "username": log.username,
+                "action_type": log.action_type,
+                "entity_type": log.entity_type,
+                "entity_id": log.entity_id,
+                "client_ip": log.client_ip,
+                "details": log.details,
+                "created_at": log.created_at.isoformat() if log.created_at else None
+            }
+            for log in logs
+        ]
+    }
