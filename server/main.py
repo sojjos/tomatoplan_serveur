@@ -29,6 +29,8 @@ from server.routers import (
     chauffeurs_router,
     admin_router,
     stats_router,
+    sst_router,
+    finance_router,
 )
 from server.models import UserRole, User
 from server.services.backup_service import BackupService
@@ -337,6 +339,8 @@ app.include_router(voyages_router)
 app.include_router(chauffeurs_router)
 app.include_router(admin_router)
 app.include_router(stats_router)
+app.include_router(sst_router)
+app.include_router(finance_router)
 
 
 # ============== Endpoints de base ==============
