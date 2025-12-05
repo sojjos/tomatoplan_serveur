@@ -39,6 +39,9 @@ from api_adapter import (
     get_user_permissions,
     SERVER_URL,
     VERIFY_SSL,
+    connection_monitor,
+    is_online,
+    get_connection_status,
 )
 
 
@@ -317,6 +320,9 @@ from api_adapter import (
     get_current_user as _api_get_current_user,
     get_user_permissions as _api_get_permissions,
     api_client as _api_client,
+    connection_monitor as _connection_monitor,
+    is_online as _is_online,
+    get_connection_status as _get_connection_status,
 )
 
 # Remplacer ActivityLogger
@@ -325,9 +331,84 @@ class ActivityLogger(ActivityLoggerAPI):
 
 activity_logger = ActivityLogger()
 
+# Variable globale pour stocker la reference a l'app principale
+_ptt_app_instance = None
+
+# ===== LIVE STATUS INDICATOR =====
+
+def _update_live_status(app):
+    """Met a jour l'indicateur de statut en ligne/hors ligne"""
+    if not hasattr(app, 'status_var') or not hasattr(app, 'root'):
+        return
+
+    try:
+        is_live = _is_online()
+        status_text = "En ligne" if is_live else "Hors ligne"
+        status_indicator = "●" if is_live else "○"
+        color_hint = "(live)" if is_live else "(deconnecte)"
+
+        app.status_var.set(
+            f"Session : {app.current_user} | {status_indicator} {status_text}"
+        )
+
+        # Mettre a jour la couleur de la barre de statut si possible
+        if hasattr(app, 'status_label'):
+            fg_color = "green" if is_live else "red"
+            try:
+                app.status_label.config(foreground=fg_color)
+            except Exception:
+                pass
+
+    except Exception as e:
+        pass
+
+def _start_live_status_monitor(app):
+    """Demarre le moniteur de statut en direct"""
+    global _ptt_app_instance
+    _ptt_app_instance = app
+
+    # Demarrer le moniteur de connexion
+    _connection_monitor.start()
+
+    # Fonction de mise a jour periodique
+    def update_loop():
+        if _ptt_app_instance and hasattr(_ptt_app_instance, 'root'):
+            _update_live_status(_ptt_app_instance)
+            try:
+                _ptt_app_instance.root.after(5000, update_loop)  # Toutes les 5 secondes
+            except Exception:
+                pass
+
+    # Premiere mise a jour
+    _update_live_status(app)
+
+    # Demarrer la boucle de mise a jour
+    try:
+        app.root.after(5000, update_loop)
+    except Exception:
+        pass
+
 # ===== END PATCH =====
 
 '''
+
+    # Patcher la methode update_status_bar_initial pour utiliser le statut live
+    patched_source = patched_source.replace(
+        '''def update_status_bar_initial(self):
+        """Initialise la barre de statut au démarrage (session + heure de lancement)."""
+        from datetime import datetime
+        self.last_refresh_dt = datetime.now()
+        try:
+            self.status_var.set(
+                f"Session : {self.current_user} | Dernière MAJ : {self.last_refresh_dt.strftime('%d/%m/%Y %H:%M:%S')}"
+            )
+        except Exception:
+            pass''',
+        '''def update_status_bar_initial(self):
+        """Initialise la barre de statut au demarrage avec statut live."""
+        # Mode client-serveur: utiliser le statut de connexion
+        _start_live_status_monitor(self)'''
+    )
 
     patched_source = header + patched_source
 
@@ -387,6 +468,11 @@ def main():
         traceback.print_exc()
         messagebox.showerror("Erreur", f"Erreur au lancement: {e}")
     finally:
+        # Arreter le moniteur de connexion
+        try:
+            connection_monitor.stop()
+        except Exception:
+            pass
         # Deconnexion
         try:
             api_client.logout()

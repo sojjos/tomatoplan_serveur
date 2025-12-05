@@ -654,3 +654,118 @@ def get_current_user() -> str:
 def get_user_permissions() -> dict:
     """Retourne les permissions de l'utilisateur"""
     return api_client.get_permissions()
+
+
+# ============================================================================
+# CONNECTION STATUS MONITOR
+# ============================================================================
+
+class ConnectionStatusMonitor:
+    """
+    Moniteur de statut de connexion en temps reel.
+    Verifie periodiquement si le serveur est accessible.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self._is_online = False
+        self._last_check = None
+        self._check_interval = 5  # seconds
+        self._callbacks = []
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        """Demarre le monitoring en arriere-plan"""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Arrete le monitoring"""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _monitor_loop(self):
+        """Boucle de monitoring"""
+        while not self._stop_event.is_set():
+            self._check_connection()
+            self._stop_event.wait(self._check_interval)
+
+    def _check_connection(self):
+        """Verifie la connexion au serveur"""
+        old_status = self._is_online
+        try:
+            result = api_client.check_server()
+            self._is_online = result.get("status") == "ok"
+        except Exception:
+            self._is_online = False
+
+        self._last_check = datetime.now()
+
+        # Notifier si le statut a change
+        if old_status != self._is_online:
+            for callback in self._callbacks:
+                try:
+                    callback(self._is_online)
+                except Exception:
+                    pass
+
+    def add_callback(self, callback):
+        """Ajoute un callback appele quand le statut change"""
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def remove_callback(self, callback):
+        """Retire un callback"""
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
+    @property
+    def is_online(self) -> bool:
+        """Retourne True si le serveur est accessible"""
+        return self._is_online
+
+    @property
+    def status_text(self) -> str:
+        """Retourne le texte de statut"""
+        if self._is_online:
+            return "En ligne"
+        return "Hors ligne"
+
+    @property
+    def status_color(self) -> str:
+        """Retourne la couleur du statut (green/red)"""
+        return "green" if self._is_online else "red"
+
+    def force_check(self) -> bool:
+        """Force une verification immediate"""
+        self._check_connection()
+        return self._is_online
+
+
+# Instance globale du moniteur
+connection_monitor = ConnectionStatusMonitor()
+
+
+def is_online() -> bool:
+    """Retourne True si le client est connecte au serveur"""
+    return connection_monitor.is_online
+
+
+def get_connection_status() -> str:
+    """Retourne le texte de statut de connexion"""
+    return connection_monitor.status_text
