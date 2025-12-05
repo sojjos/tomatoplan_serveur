@@ -140,6 +140,18 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Vérifier l'authentification
+    if (!isAuthenticated()) {
+        window.location.href = '/admin/login';
+        return;
+    }
+
+    // Afficher l'utilisateur connecté
+    const user = getCurrentUser();
+    if (user) {
+        document.getElementById('current-user').textContent = user.username + ' (' + user.role + ')';
+    }
+
     loadDashboard();
     // Rafraîchir toutes les 30 secondes
     setInterval(loadDashboard, 30000);

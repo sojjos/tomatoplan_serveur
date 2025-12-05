@@ -321,11 +321,17 @@ print_step "Informations de connexion"
 echo -e "${YELLOW}Recherche du mot de passe admin temporaire...${NC}"
 sleep 2
 
-# Chercher dans les logs
-TEMP_PASSWORD=$(journalctl -u tomatoplan --no-pager | grep -oP "(?<=temporaire[: ]+)[A-Za-z0-9_-]{12,}" | tail -1)
+# Chercher dans les logs - format: "MOT DE PASSE TEMPORAIRE: xxxx"
+TEMP_PASSWORD=$(journalctl -u tomatoplan --no-pager 2>/dev/null | grep -oP "MOT DE PASSE TEMPORAIRE:\s*\K[A-Za-z0-9_-]+" | tail -1)
 
 if [ -z "$TEMP_PASSWORD" ]; then
-    TEMP_PASSWORD=$(journalctl -u tomatoplan --no-pager | grep -oP "(?<=password[: ]+)[A-Za-z0-9_-]{12,}" | tail -1)
+    # Essayer un autre format
+    TEMP_PASSWORD=$(journalctl -u tomatoplan --no-pager 2>/dev/null | grep -oP "TEMPORAIRE[: ]+\K[A-Za-z0-9_-]{8,}" | tail -1)
+fi
+
+if [ -z "$TEMP_PASSWORD" ]; then
+    # Dernier essai - chercher dans le fichier log
+    TEMP_PASSWORD=$(cat ${APP_DIR}/logs/server.log 2>/dev/null | grep -oP "MOT DE PASSE TEMPORAIRE:\s*\K[A-Za-z0-9_-]+" | tail -1)
 fi
 
 # ============================================================

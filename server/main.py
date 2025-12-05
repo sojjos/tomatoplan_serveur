@@ -165,6 +165,8 @@ async def init_default_roles():
 
 async def init_default_admin():
     """Crée l'utilisateur admin par défaut si configuré"""
+    from server.services.auth_service import AuthService
+
     if not settings.default_admin_enabled:
         return
 
@@ -176,23 +178,21 @@ async def init_default_admin():
 
         logger.info("Création de l'utilisateur admin par défaut...")
 
-        # Récupérer le rôle admin
-        role_result = await db.execute(
-            select(UserRole).where(UserRole.name == "admin")
-        )
-        admin_role = role_result.scalar_one_or_none()
-
-        admin_user = User(
-            username=settings.default_admin_username.upper(),
+        # Créer l'admin avec un mot de passe temporaire
+        admin_user, temp_password = await AuthService.create_user(
+            db=db,
+            username=settings.default_admin_username,
+            password=None,  # Génère un mot de passe temporaire
+            role_name="admin",
             display_name="Administrateur",
-            role=admin_role,
-            is_active=True,
-            is_system_admin=True,
+            is_system_admin=True
         )
 
-        db.add(admin_user)
-        await db.commit()
         logger.info(f"  Admin créé: {admin_user.username}")
+        logger.info(f"  ╔════════════════════════════════════════════════════════╗")
+        logger.info(f"  ║  MOT DE PASSE TEMPORAIRE: {temp_password:<24}    ║")
+        logger.info(f"  ╚════════════════════════════════════════════════════════╝")
+        logger.info(f"  IMPORTANT: Changez ce mot de passe à la première connexion!")
 
 
 # ============== Tâches de fond ==============
@@ -396,6 +396,23 @@ async def admin_page(request: Request):
     <body>
         <h1>Interface admin non disponible</h1>
         <p>Les templates ne sont pas installés.</p>
+        <p><a href="/docs">Accéder à l'API</a></p>
+    </body>
+    </html>
+    """, status_code=503)
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+async def admin_login_page(request: Request):
+    """Page de connexion admin"""
+    if templates:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+    return HTMLResponse("""
+    <html>
+    <head><title>Login - Non disponible</title></head>
+    <body>
+        <h1>Page de connexion non disponible</h1>
         <p><a href="/docs">Accéder à l'API</a></p>
     </body>
     </html>
