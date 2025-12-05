@@ -1,5 +1,5 @@
 """
-Routes d'authentification
+Routes d'authentification sécurisée (avec mot de passe)
 """
 
 from typing import Optional
@@ -14,9 +14,12 @@ from server.models import User, ActivityLog
 router = APIRouter(prefix="/auth", tags=["Authentification"])
 
 
+# ============== Schémas ==============
+
 class LoginRequest(BaseModel):
-    """Requête de connexion"""
-    username: str  # Identifiant Windows (DOMAIN\username ou username)
+    """Requête de connexion avec mot de passe"""
+    username: str  # Identifiant (DOMAIN\username ou username)
+    password: str  # Mot de passe
     hostname: Optional[str] = None  # Nom de la machine cliente
 
 
@@ -25,7 +28,14 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: str
+    must_change_password: bool = False
     user: dict
+
+
+class ChangePasswordRequest(BaseModel):
+    """Requête de changement de mot de passe"""
+    current_password: str
+    new_password: str
 
 
 class CurrentUser(BaseModel):
@@ -37,6 +47,8 @@ class CurrentUser(BaseModel):
     is_system_admin: bool
     permissions: dict
 
+
+# ============== Dépendances ==============
 
 async def get_current_user(
     request: Request,
@@ -92,6 +104,8 @@ def require_permission(permission: str):
     return check_permission
 
 
+# ============== Endpoints ==============
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
@@ -99,28 +113,46 @@ async def login(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Authentification par identifiant Windows.
+    Authentification avec identifiant et mot de passe.
 
-    Le client envoie son identifiant Windows (récupéré via %USERNAME% ou getpass).
-    Le serveur vérifie si l'utilisateur est autorisé et retourne un token JWT.
+    - **username**: Identifiant utilisateur (ex: JEAN.DUPONT)
+    - **password**: Mot de passe
+    - **hostname**: (optionnel) Nom de la machine cliente
+
+    Retourne un token JWT valide 8 heures.
+
+    Sécurité:
+    - Verrouillage après 5 tentatives échouées (15 min)
+    - Mot de passe hashé avec bcrypt
     """
     client_ip = request.client.host if request.client else None
 
-    result = await AuthService.authenticate_windows_user(
-        db=db,
-        username=login_data.username,
-        client_ip=client_ip,
-        client_hostname=login_data.hostname,
-        user_agent=request.headers.get("User-Agent")
-    )
+    try:
+        result = await AuthService.authenticate(
+            db=db,
+            username=login_data.username,
+            password=login_data.password,
+            client_ip=client_ip,
+            client_hostname=login_data.hostname,
+            user_agent=request.headers.get("User-Agent")
+        )
+    except ValueError as e:
+        # Logger la tentative échouée
+        log_entry = ActivityLog(
+            username=AuthService.normalize_username(login_data.username),
+            action_type="LOGIN_FAILED",
+            details={"reason": str(e), "client_ip": client_ip},
+            client_ip=client_ip
+        )
+        db.add(log_entry)
+        await db.commit()
 
-    if not result:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur non autorisé ou compte désactivé"
+            detail=str(e)
         )
 
-    # Logger la connexion
+    # Logger la connexion réussie
     log_entry = ActivityLog(
         username=result["user"]["username"],
         action_type="LOGIN",
@@ -145,7 +177,6 @@ async def logout(
     success = await AuthService.logout(db, token)
 
     if success:
-        # Logger la déconnexion
         log_entry = ActivityLog(
             username=current_user.username,
             action_type="LOGOUT"
@@ -153,7 +184,7 @@ async def logout(
         db.add(log_entry)
         await db.commit()
 
-    return {"success": success, "message": "Déconnecté" if success else "Erreur lors de la déconnexion"}
+    return {"success": success, "message": "Déconnecté" if success else "Erreur"}
 
 
 @router.get("/me", response_model=CurrentUser)
@@ -171,6 +202,47 @@ async def get_me(
     }
 
 
+@router.post("/change-password")
+async def change_password(
+    request: Request,
+    password_data: ChangePasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Change le mot de passe de l'utilisateur courant.
+
+    Le nouveau mot de passe doit contenir:
+    - Au moins 8 caractères
+    - Au moins une majuscule
+    - Au moins une minuscule
+    - Au moins un chiffre
+    """
+    try:
+        await AuthService.change_password(
+            db=db,
+            user=current_user,
+            current_password=password_data.current_password,
+            new_password=password_data.new_password
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    # Logger le changement
+    log_entry = ActivityLog(
+        username=current_user.username,
+        action_type="PASSWORD_CHANGED",
+        client_ip=request.client.host if request.client else None
+    )
+    db.add(log_entry)
+    await db.commit()
+
+    return {"success": True, "message": "Mot de passe modifié avec succès"}
+
+
 @router.post("/refresh")
 async def refresh_token(
     request: Request,
@@ -179,21 +251,43 @@ async def refresh_token(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Rafraîchit le token (prolonge la session).
-    Retourne un nouveau token avec une nouvelle date d'expiration.
+    Rafraîchit le token sans redemander le mot de passe.
+    Prolonge la session de 8 heures supplémentaires.
     """
-    # D'abord déconnecter la session actuelle
-    token = authorization.replace("Bearer ", "")
-    await AuthService.logout(db, token)
+    import secrets
+    from datetime import datetime, timedelta
+    from jose import jwt
+    from server.config import settings
+    from server.models import UserSession
 
-    # Puis créer une nouvelle session
-    client_ip = request.client.host if request.client else None
+    # Invalider l'ancienne session
+    old_token = authorization.replace("Bearer ", "")
+    await AuthService.logout(db, old_token)
 
-    result = await AuthService.authenticate_windows_user(
-        db=db,
-        username=current_user.username,
-        client_ip=client_ip,
-        user_agent=request.headers.get("User-Agent")
+    # Créer une nouvelle session
+    session_id = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
+
+    session = UserSession(
+        session_id=session_id,
+        user_id=current_user.id,
+        client_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("User-Agent"),
+        expires_at=expires_at
     )
+    db.add(session)
+    await db.commit()
 
-    return result
+    # Générer le nouveau token
+    token_data = {
+        "sub": current_user.username,
+        "session_id": session_id,
+        "exp": expires_at
+    }
+    token = jwt.encode(token_data, settings.secret_key, algorithm="HS256")
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_at": expires_at.isoformat()
+    }

@@ -5,11 +5,23 @@ Module client pour communiquer avec le serveur TomatoPlan.
 Ce module remplace les fonctions load_json/save_json de l'application originale
 pour utiliser l'API REST au lieu des fichiers JSON locaux.
 
+IMPORTANT: Pour un serveur exposé sur Internet, utilisez HTTPS obligatoirement.
+L'authentification par mot de passe est requise.
+
 Usage:
     from api_client import TomatoPlanClient
 
-    client = TomatoPlanClient("http://192.168.1.100:8000")
-    client.login()  # Utilise automatiquement le nom d'utilisateur Windows
+    # Connexion au serveur (HTTPS obligatoire pour Internet)
+    client = TomatoPlanClient("https://serveur.example.com", verify_ssl=True)
+    # Pour certificat auto-signé: verify_ssl=False
+
+    # Connexion avec mot de passe (demandé interactivement si non fourni)
+    client.login(password="votre_mot_de_passe")
+    # Ou: client.login()  # Le mot de passe sera demandé via getpass
+
+    # Si premier login avec mot de passe temporaire
+    if client.must_change_password:
+        client.change_password("mot_de_passe_temp", "nouveau_mot_de_passe")
 
     # Récupérer les missions d'une date
     missions = client.get_missions_by_date("2024-01-15")
@@ -27,31 +39,44 @@ import os
 import getpass
 import socket
 import requests
+import urllib3
 from datetime import date, datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 import json
 
+# Désactiver les warnings pour les certificats auto-signés (si nécessaire)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 class TomatoPlanClient:
     """Client pour l'API TomatoPlan"""
 
-    def __init__(self, server_url: str, timeout: int = 30):
+    def __init__(
+        self,
+        server_url: str,
+        timeout: int = 30,
+        verify_ssl: bool = True
+    ):
         """
         Initialise le client API.
 
         Args:
-            server_url: URL du serveur (ex: "http://192.168.1.100:8000")
+            server_url: URL du serveur (ex: "https://serveur.example.com")
             timeout: Timeout des requêtes en secondes
+            verify_ssl: Vérifier le certificat SSL (False pour certificats auto-signés)
         """
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
         self.token: Optional[str] = None
         self.user_info: Optional[Dict] = None
+        self.must_change_password: bool = False
         self._session = requests.Session()
 
-        # Chemins pour le cache local (optionnel)
-        self._cache_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "TomatoPlan" / "cache"
+        # Chemins pour le cache local et les credentials
+        self._app_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "TomatoPlan"
+        self._cache_dir = self._app_dir / "cache"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_windows_username(self) -> str:
@@ -106,7 +131,8 @@ class TomatoPlanClient:
                 headers=self._headers(),
                 json=data,
                 params=params,
-                timeout=self.timeout
+                timeout=self.timeout,
+                verify=self.verify_ssl
             )
 
             # Gérer les erreurs
@@ -137,33 +163,46 @@ class TomatoPlanClient:
 
     # ============== Authentification ==============
 
-    def login(self, username: Optional[str] = None) -> bool:
+    def login(self, username: Optional[str] = None, password: Optional[str] = None) -> bool:
         """
         Authentifie l'utilisateur auprès du serveur.
 
         Args:
             username: Nom d'utilisateur (optionnel, utilise le user Windows par défaut)
+            password: Mot de passe (obligatoire pour serveur Internet)
 
         Returns:
             True si l'authentification réussit
 
         Raises:
             PermissionError: Si l'utilisateur n'est pas autorisé
+            ValueError: Si le mot de passe n'est pas fourni
         """
         if username is None:
             username = self._get_windows_username()
+
+        # Demander le mot de passe si non fourni
+        if password is None:
+            password = getpass.getpass(f"Mot de passe pour {username}: ")
 
         hostname = self._get_hostname()
 
         response = self._request("POST", "/auth/login", {
             "username": username,
+            "password": password,
             "hostname": hostname
         })
 
         if response and "access_token" in response:
             self.token = response["access_token"]
             self.user_info = response.get("user", {})
+            self.must_change_password = response.get("must_change_password", False)
+
             print(f"Connecté en tant que {self.user_info.get('username')} ({self.user_info.get('role')})")
+
+            if self.must_change_password:
+                print("⚠️  Vous devez changer votre mot de passe temporaire.")
+
             return True
 
         return False
@@ -177,6 +216,33 @@ class TomatoPlanClient:
                 pass
         self.token = None
         self.user_info = None
+        self.must_change_password = False
+
+    def change_password(self, current_password: str, new_password: str) -> bool:
+        """
+        Change le mot de passe de l'utilisateur.
+
+        Args:
+            current_password: Mot de passe actuel
+            new_password: Nouveau mot de passe (min 8 car., majuscule, minuscule, chiffre)
+
+        Returns:
+            True si le changement réussit
+
+        Raises:
+            ValueError: Si le nouveau mot de passe ne respecte pas les critères
+        """
+        response = self._request("POST", "/auth/change-password", {
+            "current_password": current_password,
+            "new_password": new_password
+        })
+
+        if response and response.get("success"):
+            self.must_change_password = False
+            print("Mot de passe modifié avec succès.")
+            return True
+
+        return False
 
     def is_authenticated(self) -> bool:
         """Vérifie si l'utilisateur est authentifié"""
@@ -363,7 +429,8 @@ class TomatoPlanClient:
             # Pas besoin d'authentification pour /health
             response = requests.get(
                 f"{self.server_url}/health",
-                timeout=5
+                timeout=5,
+                verify=self.verify_ssl
             )
             return response.json()
         except Exception as e:
@@ -374,7 +441,8 @@ class TomatoPlanClient:
         try:
             response = requests.get(
                 f"{self.server_url}/server-info",
-                timeout=5
+                timeout=5,
+                verify=self.verify_ssl
             )
             return response.json()
         except Exception:
@@ -388,19 +456,25 @@ class TomatoPlanClient:
 _client: Optional[TomatoPlanClient] = None
 
 
-def init_client(server_url: str) -> TomatoPlanClient:
+def init_client(
+    server_url: str,
+    password: Optional[str] = None,
+    verify_ssl: bool = True
+) -> TomatoPlanClient:
     """
     Initialise le client global.
 
     Args:
-        server_url: URL du serveur
+        server_url: URL du serveur (ex: "https://server.example.com")
+        password: Mot de passe (demandé interactivement si non fourni)
+        verify_ssl: Vérifier le certificat SSL (False pour certificats auto-signés)
 
     Returns:
         Instance du client
     """
     global _client
-    _client = TomatoPlanClient(server_url)
-    _client.login()
+    _client = TomatoPlanClient(server_url, verify_ssl=verify_ssl)
+    _client.login(password=password)
     return _client
 
 
@@ -414,11 +488,14 @@ def get_client() -> TomatoPlanClient:
 # ============== Exemple d'utilisation ==============
 
 if __name__ == "__main__":
-    # Configuration
-    SERVER_URL = "http://localhost:8000"
+    # Configuration - Utiliser HTTPS pour serveur Internet
+    SERVER_URL = "https://votre-serveur.example.com"
+    # Pour développement local :
+    # SERVER_URL = "http://localhost:8000"
 
     # Créer le client
-    client = TomatoPlanClient(SERVER_URL)
+    # verify_ssl=False si vous utilisez un certificat auto-signé
+    client = TomatoPlanClient(SERVER_URL, verify_ssl=True)
 
     # Vérifier le serveur
     print("Vérification du serveur...")
@@ -426,13 +503,23 @@ if __name__ == "__main__":
     print(f"  Status: {status.get('status')}")
     print(f"  Uptime: {status.get('uptime_formatted')}")
 
-    # Se connecter
+    # Se connecter (le mot de passe sera demandé interactivement)
     print("\nConnexion...")
     try:
-        if client.login():
+        if client.login():  # password sera demandé via getpass
             print(f"  Utilisateur: {client.user_info.get('username')}")
             print(f"  Rôle: {client.user_info.get('role')}")
             print(f"  Permissions: {list(k for k, v in client.user_info.get('permissions', {}).items() if v)}")
+
+            # Vérifier si changement de mot de passe requis
+            if client.must_change_password:
+                print("\n⚠️  Changement de mot de passe requis!")
+                new_pwd = getpass.getpass("Nouveau mot de passe: ")
+                confirm_pwd = getpass.getpass("Confirmer: ")
+                if new_pwd == confirm_pwd:
+                    # Le mot de passe actuel est le mot de passe temporaire utilisé pour login
+                    current_pwd = getpass.getpass("Mot de passe actuel (temporaire): ")
+                    client.change_password(current_pwd, new_pwd)
 
             # Récupérer les données
             print("\nDonnées:")

@@ -1,5 +1,6 @@
 """
-Service d'authentification basé sur l'utilisateur Windows
+Service d'authentification sécurisé pour accès Internet
+Inclut: mot de passe obligatoire, verrouillage de compte, validation
 """
 
 import secrets
@@ -8,33 +9,73 @@ from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from jose import jwt, JWTError
+from passlib.context import CryptContext
 
 from server.config import settings
 from server.models.user import User, UserRole, UserSession
+
+
+# Configuration du hachage de mot de passe (bcrypt)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AuthService:
     """Service d'authentification et gestion des sessions"""
 
     ALGORITHM = "HS256"
+    MAX_FAILED_ATTEMPTS = 5  # Tentatives avant verrouillage
+    LOCKOUT_DURATION_MINUTES = 15  # Durée du verrouillage
+
+    # ============== Gestion des mots de passe ==============
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Hache un mot de passe avec bcrypt"""
+        return pwd_context.hash(password)
+
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """Vérifie un mot de passe contre son hash"""
+        return pwd_context.verify(plain_password, hashed_password)
+
+    @staticmethod
+    def generate_temp_password() -> str:
+        """Génère un mot de passe temporaire sécurisé (12 caractères)"""
+        return secrets.token_urlsafe(9)
+
+    @staticmethod
+    def validate_password_strength(password: str) -> tuple[bool, str]:
+        """
+        Valide la force d'un mot de passe.
+        Retourne (is_valid, message)
+        """
+        if len(password) < 8:
+            return False, "Le mot de passe doit contenir au moins 8 caractères"
+        if not any(c.isupper() for c in password):
+            return False, "Le mot de passe doit contenir au moins une majuscule"
+        if not any(c.islower() for c in password):
+            return False, "Le mot de passe doit contenir au moins une minuscule"
+        if not any(c.isdigit() for c in password):
+            return False, "Le mot de passe doit contenir au moins un chiffre"
+        return True, "OK"
+
+    # ============== Normalisation ==============
 
     @staticmethod
     def normalize_username(username: str) -> str:
         """
-        Normalise le nom d'utilisateur Windows.
+        Normalise le nom d'utilisateur.
         Accepte: DOMAIN\\username, DOMAIN/username, username
         Retourne: USERNAME (majuscules, sans domaine)
         """
-        # Nettoyer le nom
         username = username.strip()
-
-        # Extraire le nom sans le domaine
         if "\\" in username:
             username = username.split("\\")[-1]
         elif "/" in username:
             username = username.split("/")[-1]
-
         return username.upper()
+
+    # ============== Gestion des utilisateurs ==============
 
     @staticmethod
     async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
@@ -46,70 +87,137 @@ class AuthService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_or_create_user(
+    async def create_user(
         db: AsyncSession,
         username: str,
-        client_info: Optional[Dict[str, Any]] = None
-    ) -> tuple[User, bool]:
+        password: Optional[str] = None,
+        role_name: str = "viewer",
+        display_name: Optional[str] = None,
+        email: Optional[str] = None,
+        is_system_admin: bool = False
+    ) -> tuple[User, Optional[str]]:
         """
-        Récupère ou crée un utilisateur.
-        Retourne (user, created) où created indique si l'utilisateur a été créé.
+        Crée un nouvel utilisateur avec mot de passe.
+        Retourne (user, temp_password) - temp_password si aucun password fourni
         """
         normalized = AuthService.normalize_username(username)
-        user = await AuthService.get_user_by_username(db, normalized)
 
-        if user:
-            # Mettre à jour last_login
-            user.last_login = datetime.utcnow()
-            await db.commit()
-            return user, False
+        # Générer un mot de passe temporaire si non fourni
+        temp_password = None
+        if password:
+            password_hash = AuthService.hash_password(password)
+            must_change = False
+        else:
+            temp_password = AuthService.generate_temp_password()
+            password_hash = AuthService.hash_password(temp_password)
+            must_change = True
 
-        # Créer le nouvel utilisateur avec le rôle par défaut (viewer)
-        default_role = await db.execute(
-            select(UserRole).where(UserRole.name == "viewer")
+        # Récupérer le rôle
+        role_result = await db.execute(
+            select(UserRole).where(UserRole.name == role_name)
         )
-        role = default_role.scalar_one_or_none()
+        role = role_result.scalar_one_or_none()
 
         user = User(
             username=normalized,
-            display_name=normalized,
+            display_name=display_name or normalized,
+            email=email,
+            password_hash=password_hash,
+            must_change_password=must_change,
             role=role,
             is_active=True,
-            last_login=datetime.utcnow()
+            is_system_admin=is_system_admin
         )
         db.add(user)
         await db.commit()
         await db.refresh(user)
 
-        return user, True
+        return user, temp_password
+
+    # ============== Verrouillage de compte ==============
 
     @staticmethod
-    async def authenticate_windows_user(
+    async def check_account_locked(db: AsyncSession, user: User) -> tuple[bool, str]:
+        """
+        Vérifie si le compte est verrouillé.
+        Retourne (is_locked, message)
+        """
+        if user.locked_until and user.locked_until > datetime.utcnow():
+            remaining = (user.locked_until - datetime.utcnow()).seconds // 60
+            return True, f"Compte verrouillé. Réessayez dans {remaining + 1} minutes."
+
+        # Réinitialiser si le verrouillage est expiré
+        if user.locked_until and user.locked_until <= datetime.utcnow():
+            user.locked_until = None
+            user.failed_login_attempts = 0
+            await db.commit()
+
+        return False, ""
+
+    @staticmethod
+    async def record_failed_login(db: AsyncSession, user: User):
+        """Enregistre une tentative de connexion échouée"""
+        user.failed_login_attempts += 1
+
+        if user.failed_login_attempts >= AuthService.MAX_FAILED_ATTEMPTS:
+            user.locked_until = datetime.utcnow() + timedelta(
+                minutes=AuthService.LOCKOUT_DURATION_MINUTES
+            )
+
+        await db.commit()
+
+    @staticmethod
+    async def reset_failed_attempts(db: AsyncSession, user: User):
+        """Réinitialise le compteur de tentatives échouées"""
+        if user.failed_login_attempts > 0:
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            await db.commit()
+
+    # ============== Authentification ==============
+
+    @staticmethod
+    async def authenticate(
         db: AsyncSession,
         username: str,
+        password: str,
         client_ip: Optional[str] = None,
         client_hostname: Optional[str] = None,
         user_agent: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Authentifie un utilisateur Windows.
-        Vérifie que l'utilisateur existe et est actif.
-        Crée une session et retourne un token JWT.
+        Authentifie un utilisateur avec username + mot de passe.
+        Retourne les infos de session ou lève une exception.
         """
         user = await AuthService.get_user_by_username(db, username)
 
         if not user:
-            # En mode strict, refuser les utilisateurs non enregistrés
-            # Pour le setup initial, on peut permettre la création automatique
-            if settings.default_admin_enabled:
-                user, _ = await AuthService.get_or_create_user(db, username)
-            else:
-                return None
+            raise ValueError("Identifiants invalides")
 
         if not user.is_active:
-            return None
+            raise ValueError("Compte désactivé. Contactez l'administrateur.")
 
-        # Créer une nouvelle session
+        # Vérifier le verrouillage
+        is_locked, lock_message = await AuthService.check_account_locked(db, user)
+        if is_locked:
+            raise ValueError(lock_message)
+
+        # Vérifier le mot de passe
+        if not user.password_hash:
+            raise ValueError("Compte non configuré. Contactez l'administrateur.")
+
+        if not AuthService.verify_password(password, user.password_hash):
+            await AuthService.record_failed_login(db, user)
+            remaining = AuthService.MAX_FAILED_ATTEMPTS - user.failed_login_attempts
+            if remaining > 0:
+                raise ValueError(f"Mot de passe incorrect. {remaining} tentative(s) restante(s).")
+            else:
+                raise ValueError(f"Compte verrouillé pour {AuthService.LOCKOUT_DURATION_MINUTES} minutes.")
+
+        # Connexion réussie - réinitialiser les tentatives
+        await AuthService.reset_failed_attempts(db, user)
+
+        # Créer la session
         session_id = secrets.token_urlsafe(32)
         expires_at = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
 
@@ -125,7 +233,6 @@ class AuthService:
 
         # Mettre à jour last_login
         user.last_login = datetime.utcnow()
-
         await db.commit()
 
         # Générer le token JWT
@@ -136,13 +243,14 @@ class AuthService:
         }
         token = jwt.encode(token_data, settings.secret_key, algorithm=AuthService.ALGORITHM)
 
-        # Charger le rôle pour les permissions
+        # Charger le rôle
         await db.refresh(user, ["role"])
 
         return {
             "access_token": token,
             "token_type": "bearer",
             "expires_at": expires_at.isoformat(),
+            "must_change_password": user.must_change_password,
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -153,11 +261,57 @@ class AuthService:
             }
         }
 
+    # ============== Gestion des mots de passe ==============
+
+    @staticmethod
+    async def change_password(
+        db: AsyncSession,
+        user: User,
+        current_password: str,
+        new_password: str
+    ) -> bool:
+        """Change le mot de passe d'un utilisateur"""
+        # Vérifier l'ancien mot de passe
+        if not AuthService.verify_password(current_password, user.password_hash):
+            raise ValueError("Mot de passe actuel incorrect")
+
+        # Valider le nouveau mot de passe
+        is_valid, message = AuthService.validate_password_strength(new_password)
+        if not is_valid:
+            raise ValueError(message)
+
+        # Ne pas réutiliser l'ancien mot de passe
+        if AuthService.verify_password(new_password, user.password_hash):
+            raise ValueError("Le nouveau mot de passe doit être différent de l'ancien")
+
+        # Mettre à jour
+        user.password_hash = AuthService.hash_password(new_password)
+        user.must_change_password = False
+        await db.commit()
+
+        return True
+
+    @staticmethod
+    async def admin_reset_password(db: AsyncSession, user: User) -> str:
+        """
+        Réinitialise le mot de passe d'un utilisateur (admin).
+        Retourne le nouveau mot de passe temporaire.
+        """
+        temp_password = AuthService.generate_temp_password()
+        user.password_hash = AuthService.hash_password(temp_password)
+        user.must_change_password = True
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        await db.commit()
+
+        return temp_password
+
+    # ============== Permissions ==============
+
     @staticmethod
     def get_user_permissions(user: User) -> Dict[str, bool]:
         """Retourne les permissions de l'utilisateur"""
         if user.is_system_admin:
-            # Admin système a toutes les permissions
             return {
                 "view_planning": True,
                 "edit_planning": True,
@@ -179,7 +333,7 @@ class AuthService:
             }
 
         if not user.role:
-            return {"view_planning": True}  # Permissions minimales
+            return {"view_planning": True}
 
         return {
             "view_planning": user.role.view_planning,
@@ -201,6 +355,8 @@ class AuthService:
             "admin_access": user.role.admin_access
         }
 
+    # ============== Validation de token ==============
+
     @staticmethod
     async def validate_token(db: AsyncSession, token: str) -> Optional[User]:
         """Valide un token JWT et retourne l'utilisateur"""
@@ -212,7 +368,7 @@ class AuthService:
             if not username or not session_id:
                 return None
 
-            # Vérifier que la session est encore active
+            # Vérifier la session
             result = await db.execute(
                 select(UserSession).where(
                     and_(
@@ -227,11 +383,10 @@ class AuthService:
             if not session:
                 return None
 
-            # Mettre à jour l'activité de la session
+            # Mettre à jour l'activité
             session.last_activity = datetime.utcnow()
             await db.commit()
 
-            # Récupérer l'utilisateur
             user = await AuthService.get_user_by_username(db, username)
             if user:
                 await db.refresh(user, ["role"])
@@ -241,9 +396,11 @@ class AuthService:
         except JWTError:
             return None
 
+    # ============== Sessions ==============
+
     @staticmethod
     async def logout(db: AsyncSession, token: str) -> bool:
-        """Déconnecte un utilisateur (invalide la session)"""
+        """Déconnecte un utilisateur"""
         try:
             payload = jwt.decode(token, settings.secret_key, algorithms=[AuthService.ALGORITHM])
             session_id = payload.get("session_id")
@@ -296,7 +453,7 @@ class AuthService:
 
     @staticmethod
     async def force_disconnect_user(db: AsyncSession, username: str) -> int:
-        """Force la déconnexion d'un utilisateur (invalide toutes ses sessions)"""
+        """Force la déconnexion d'un utilisateur"""
         user = await AuthService.get_user_by_username(db, username)
         if not user:
             return 0
