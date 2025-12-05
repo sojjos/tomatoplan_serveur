@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - TomatoPlan Admin{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1>Dashboard</h1>
+
+    <!-- Statut serveur -->
+    <section class="section">
+        <h2>État du serveur</h2>
+        <div class="cards">
+            <div class="card status-card">
+                <div class="card-icon status-running">●</div>
+                <div class="card-content">
+                    <div class="card-title">Statut</div>
+                    <div class="card-value" id="server-status-value">EN COURS</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Uptime</div>
+                    <div class="card-value" id="uptime-value">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Adresse</div>
+                    <div class="card-value" id="server-address">--</div>
+                    <button class="btn btn-sm" onclick="copyAddress()">Copier</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Version</div>
+                    <div class="card-value" id="version-value">--</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Statistiques -->
+    <section class="section">
+        <h2>Statistiques du jour</h2>
+        <div class="cards">
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Missions planifiées</div>
+                    <div class="card-value" id="missions-today">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Missions créées</div>
+                    <div class="card-value" id="missions-created">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Missions modifiées</div>
+                    <div class="card-value" id="missions-modified">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Requêtes API</div>
+                    <div class="card-value" id="api-requests">--</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Ressources -->
+    <section class="section">
+        <h2>Ressources</h2>
+        <div class="cards">
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Chauffeurs actifs</div>
+                    <div class="card-value" id="chauffeurs-count">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Voyages actifs</div>
+                    <div class="card-value" id="voyages-count">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Utilisateurs</div>
+                    <div class="card-value" id="users-count">--</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-content">
+                    <div class="card-title">Taille BDD</div>
+                    <div class="card-value" id="db-size">--</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Sessions actives -->
+    <section class="section">
+        <h2>Sessions actives</h2>
+        <table class="table" id="sessions-table">
+            <thead>
+                <tr>
+                    <th>Utilisateur</th>
+                    <th>IP</th>
+                    <th>Connecté depuis</th>
+                    <th>Dernière activité</th>
+                </tr>
+            </thead>
+            <tbody id="sessions-body">
+                <tr><td colspan="4">Chargement...</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- Activité récente -->
+    <section class="section">
+        <h2>Activité récente</h2>
+        <table class="table" id="activity-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Utilisateur</th>
+                    <th>Action</th>
+                    <th>Entité</th>
+                </tr>
+            </thead>
+            <tbody id="activity-body">
+                <tr><td colspan="4">Chargement...</td></tr>
+            </tbody>
+        </table>
+    </section>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadDashboard();
+    // Rafraîchir toutes les 30 secondes
+    setInterval(loadDashboard, 30000);
+});
+
+async function loadDashboard() {
+    try {
+        // Charger les infos serveur
+        const serverInfo = await apiCall('/server-info');
+        document.getElementById('uptime-value').textContent = serverInfo.uptime_formatted;
+        document.getElementById('server-address').textContent = `${serverInfo.host}:${serverInfo.port}`;
+        document.getElementById('version-value').textContent = serverInfo.version;
+
+        // Charger les stats
+        const stats = await apiCall('/stats/dashboard');
+        document.getElementById('missions-today').textContent = stats.missions.today;
+        document.getElementById('missions-created').textContent = stats.missions.created_today;
+        document.getElementById('missions-modified').textContent = stats.missions.modified_today;
+        document.getElementById('api-requests').textContent = stats.api.requests_today;
+        document.getElementById('chauffeurs-count').textContent = stats.chauffeurs.active;
+        document.getElementById('voyages-count').textContent = stats.voyages.active;
+        document.getElementById('users-count').textContent = stats.users.total;
+        document.getElementById('db-size').textContent = stats.database.size_formatted;
+
+        // Charger les sessions
+        const sessions = await apiCall('/admin/sessions');
+        const sessionsBody = document.getElementById('sessions-body');
+        if (sessions.length === 0) {
+            sessionsBody.innerHTML = '<tr><td colspan="4">Aucune session active</td></tr>';
+        } else {
+            sessionsBody.innerHTML = sessions.map(s => `
+                <tr>
+                    <td><strong>${s.username}</strong></td>
+                    <td>${s.client_ip || '-'}</td>
+                    <td>${formatDate(s.connected_at)}</td>
+                    <td>${formatDate(s.last_activity)}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Charger l'activité récente
+        const activity = await apiCall('/stats/activity/recent?limit=10');
+        const activityBody = document.getElementById('activity-body');
+        if (activity.length === 0) {
+            activityBody.innerHTML = '<tr><td colspan="4">Aucune activité</td></tr>';
+        } else {
+            activityBody.innerHTML = activity.map(a => `
+                <tr>
+                    <td>${formatDate(a.created_at)}</td>
+                    <td><strong>${a.username}</strong></td>
+                    <td><span class="badge badge-${getActionColor(a.action_type)}">${a.action_type}</span></td>
+                    <td>${a.entity_type || '-'} ${a.entity_id ? '#' + a.entity_id : ''}</td>
+                </tr>
+            `).join('');
+        }
+
+    } catch (error) {
+        console.error('Erreur chargement dashboard:', error);
+    }
+}
+
+function copyAddress() {
+    const address = document.getElementById('server-address').textContent;
+    navigator.clipboard.writeText(`http://${address}`);
+    alert('Adresse copiée!');
+}
+
+function getActionColor(action) {
+    switch(action) {
+        case 'LOGIN': return 'success';
+        case 'LOGOUT': return 'info';
+        case 'CREATE': return 'primary';
+        case 'UPDATE': return 'warning';
+        case 'DELETE': return 'danger';
+        default: return 'secondary';
+    }
+}
+</script>
+{% endblock %}

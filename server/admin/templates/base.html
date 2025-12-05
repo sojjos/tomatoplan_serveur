@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}TomatoPlan Admin{% endblock %}</title>
+    <link rel="stylesheet" href="/admin/static/css/admin.css">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <span class="logo">TomatoPlan</span>
+            <span class="version">Admin</span>
+        </div>
+        <div class="navbar-menu">
+            <a href="/admin" class="nav-item {% if active == 'dashboard' %}active{% endif %}">Dashboard</a>
+            <a href="/admin/users" class="nav-item {% if active == 'users' %}active{% endif %}">Utilisateurs</a>
+            <a href="/admin/sessions" class="nav-item {% if active == 'sessions' %}active{% endif %}">Sessions</a>
+            <a href="/admin/logs" class="nav-item {% if active == 'logs' %}active{% endif %}">Logs</a>
+            <a href="/admin/backups" class="nav-item {% if active == 'backups' %}active{% endif %}">Backups</a>
+            <a href="/admin/config" class="nav-item {% if active == 'config' %}active{% endif %}">Config</a>
+        </div>
+        <div class="navbar-end">
+            <span class="user-info" id="current-user">Non connecté</span>
+            <button class="btn btn-sm" onclick="logout()">Déconnexion</button>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <span>TomatoPlan Server v{{ version }}</span>
+        <span id="server-status">Vérification...</span>
+    </footer>
+
+    <script src="/admin/static/js/admin.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
