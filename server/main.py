@@ -384,6 +384,24 @@ async def root(request: Request):
     """)
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    """Page d'administration"""
+    if templates:
+        return templates.TemplateResponse("index.html", {"request": request})
+
+    return HTMLResponse("""
+    <html>
+    <head><title>Admin - Non disponible</title></head>
+    <body>
+        <h1>Interface admin non disponible</h1>
+        <p>Les templates ne sont pas installés.</p>
+        <p><a href="/docs">Accéder à l'API</a></p>
+    </body>
+    </html>
+    """, status_code=503)
+
+
 @app.get("/health")
 async def health_check():
     """Vérification de l'état du serveur"""
