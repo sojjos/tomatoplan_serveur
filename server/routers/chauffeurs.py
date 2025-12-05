@@ -13,6 +13,7 @@ from sqlalchemy import select, and_
 from server.database import get_db
 from server.models import Chauffeur, ChauffeurDispo, User, ActivityLog
 from server.routers.auth import get_current_user, require_permission
+from server.services.websocket_manager import notify_change
 
 router = APIRouter(prefix="/chauffeurs", tags=["Chauffeurs"])
 
@@ -195,6 +196,9 @@ async def create_chauffeur(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients
+    await notify_change("chauffeurs", "created", chauffeur.id, changed_by=current_user.username)
+
     return chauffeur
 
 
@@ -240,6 +244,9 @@ async def update_chauffeur(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients
+    await notify_change("chauffeurs", "updated", chauffeur.id, changed_by=current_user.username)
+
     return chauffeur
 
 
@@ -276,6 +283,9 @@ async def delete_chauffeur(
     )
     db.add(log_entry)
     await db.commit()
+
+    # Notifier tous les clients
+    await notify_change("chauffeurs", "deleted", chauffeur_id, changed_by=current_user.username)
 
     return {"success": True, "message": f"Chauffeur {chauffeur_id} désactivé"}
 
@@ -332,6 +342,9 @@ async def create_disponibilite(
     await db.commit()
     await db.refresh(dispo)
 
+    # Notifier tous les clients
+    await notify_change("disponibilites", "created", dispo.id, changed_by=current_user.username)
+
     return dispo
 
 
@@ -356,6 +369,9 @@ async def delete_disponibilite(
 
     await db.delete(dispo)
     await db.commit()
+
+    # Notifier tous les clients
+    await notify_change("disponibilites", "deleted", dispo_id, changed_by=current_user.username)
 
     return {"success": True, "message": f"Indisponibilité {dispo_id} supprimée"}
 

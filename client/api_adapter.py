@@ -769,3 +769,273 @@ def is_online() -> bool:
 def get_connection_status() -> str:
     """Retourne le texte de statut de connexion"""
     return connection_monitor.status_text
+
+
+# ============================================================================
+# WEBSOCKET CLIENT - SYNCHRONISATION TEMPS REEL
+# ============================================================================
+
+class LiveSyncClient:
+    """
+    Client WebSocket pour la synchronisation temps reel multi-utilisateur.
+
+    Quand un autre utilisateur fait une modification, ce client recoit
+    une notification et declenche un callback pour rafraichir l'interface.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+
+        self._ws = None
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._connected = False
+        self._reconnect_delay = 5
+
+        # Callbacks pour les differents types d'evenements
+        self._on_data_changed_callbacks = []
+        self._on_user_event_callbacks = []
+        self._on_connection_changed_callbacks = []
+
+        # Liste des utilisateurs connectes
+        self._connected_users = []
+
+    def start(self):
+        """Demarre la connexion WebSocket"""
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._connection_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Arrete la connexion WebSocket"""
+        self._stop_event.set()
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    def _connection_loop(self):
+        """Boucle de connexion avec reconnexion automatique"""
+        while not self._stop_event.is_set():
+            try:
+                self._connect()
+            except Exception as e:
+                print(f"[WS] Erreur connexion: {e}")
+
+            if not self._stop_event.is_set():
+                # Attendre avant de se reconnecter
+                self._stop_event.wait(self._reconnect_delay)
+
+    def _connect(self):
+        """Etablit la connexion WebSocket"""
+        try:
+            import websocket
+        except ImportError:
+            print("[WS] websocket-client non installe, mode temps reel desactive")
+            return
+
+        # Construire l'URL WebSocket
+        ws_url = SERVER_URL.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_url}/ws"
+
+        # Ajouter le token si disponible
+        if api_client.token:
+            ws_url = f"{ws_url}?token={api_client.token}"
+
+        print(f"[WS] Connexion a {ws_url}")
+
+        # Creer la connexion
+        self._ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close
+        )
+
+        # Options SSL pour certificats auto-signes
+        import ssl
+        ssl_opt = {"cert_reqs": ssl.CERT_NONE} if not VERIFY_SSL else None
+
+        # Lancer la boucle de reception
+        self._ws.run_forever(sslopt=ssl_opt)
+
+    def _on_open(self, ws):
+        """Callback quand la connexion est etablie"""
+        self._connected = True
+        print("[WS] Connecte au serveur - Mode temps reel actif")
+
+        # Notifier les callbacks
+        for callback in self._on_connection_changed_callbacks:
+            try:
+                callback(True)
+            except Exception:
+                pass
+
+    def _on_message(self, ws, message):
+        """Callback quand un message est recu"""
+        try:
+            data = json.loads(message)
+            msg_type = data.get("type", "")
+
+            if msg_type == "welcome":
+                # Message de bienvenue avec liste des utilisateurs
+                self._connected_users = data.get("connected_users", [])
+                print(f"[WS] {len(self._connected_users)} utilisateur(s) connecte(s)")
+
+            elif msg_type == "data_changed":
+                # Notification de changement de donnees
+                change_data = data.get("data", {})
+                entity = change_data.get("entity", "")
+                action = change_data.get("action", "")
+                changed_by = change_data.get("changed_by", "inconnu")
+
+                print(f"[WS] Changement: {entity}/{action} par {changed_by}")
+
+                # Invalider le cache pour cette entite
+                api_client.invalidate_cache(f"/{entity}")
+
+                # Notifier les callbacks
+                for callback in self._on_data_changed_callbacks:
+                    try:
+                        callback(entity, action, change_data)
+                    except Exception as e:
+                        print(f"[WS] Erreur callback: {e}")
+
+            elif msg_type == "user_connected":
+                user_data = data.get("data", {})
+                username = user_data.get("username", "")
+                print(f"[WS] Utilisateur connecte: {username}")
+
+                for callback in self._on_user_event_callbacks:
+                    try:
+                        callback("connected", username)
+                    except Exception:
+                        pass
+
+            elif msg_type == "user_disconnected":
+                user_data = data.get("data", {})
+                username = user_data.get("username", "")
+                print(f"[WS] Utilisateur deconnecte: {username}")
+
+                for callback in self._on_user_event_callbacks:
+                    try:
+                        callback("disconnected", username)
+                    except Exception:
+                        pass
+
+            elif msg_type == "connected_users":
+                self._connected_users = data.get("users", [])
+
+            elif msg_type == "pong":
+                pass  # Reponse au ping
+
+            elif msg_type == "refresh_required":
+                # Rafraichissement global requis
+                print("[WS] Rafraichissement requis")
+                api_client.invalidate_cache()
+
+                for callback in self._on_data_changed_callbacks:
+                    try:
+                        callback("all", "refresh", data.get("data", {}))
+                    except Exception:
+                        pass
+
+        except json.JSONDecodeError:
+            print(f"[WS] Message invalide: {message[:100]}")
+        except Exception as e:
+            print(f"[WS] Erreur traitement message: {e}")
+
+    def _on_error(self, ws, error):
+        """Callback en cas d'erreur"""
+        print(f"[WS] Erreur: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        """Callback quand la connexion est fermee"""
+        self._connected = False
+        print(f"[WS] Deconnecte (code: {close_status_code})")
+
+        for callback in self._on_connection_changed_callbacks:
+            try:
+                callback(False)
+            except Exception:
+                pass
+
+    def on_data_changed(self, callback):
+        """
+        Enregistre un callback pour les changements de donnees.
+
+        Le callback recoit: (entity_type, action, data)
+        - entity_type: "missions", "chauffeurs", "voyages", etc.
+        - action: "created", "updated", "deleted"
+        - data: dictionnaire avec les details du changement
+        """
+        if callback not in self._on_data_changed_callbacks:
+            self._on_data_changed_callbacks.append(callback)
+
+    def on_user_event(self, callback):
+        """
+        Enregistre un callback pour les evenements utilisateur.
+
+        Le callback recoit: (event_type, username)
+        - event_type: "connected", "disconnected"
+        - username: nom de l'utilisateur
+        """
+        if callback not in self._on_user_event_callbacks:
+            self._on_user_event_callbacks.append(callback)
+
+    def on_connection_changed(self, callback):
+        """
+        Enregistre un callback pour les changements de connexion.
+
+        Le callback recoit: (is_connected: bool)
+        """
+        if callback not in self._on_connection_changed_callbacks:
+            self._on_connection_changed_callbacks.append(callback)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def connected_users(self) -> list:
+        return self._connected_users.copy()
+
+    @property
+    def connected_users_count(self) -> int:
+        return len(self._connected_users)
+
+
+# Instance globale du client live
+live_sync = LiveSyncClient()
+
+
+def start_live_sync():
+    """Demarre la synchronisation temps reel"""
+    live_sync.start()
+
+
+def stop_live_sync():
+    """Arrete la synchronisation temps reel"""
+    live_sync.stop()
+
+
+def on_data_changed(callback):
+    """Enregistre un callback pour les changements de donnees"""
+    live_sync.on_data_changed(callback)

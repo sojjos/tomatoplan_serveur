@@ -13,6 +13,7 @@ from sqlalchemy import select
 from server.database import get_db
 from server.models import Voyage, User, ActivityLog
 from server.routers.auth import get_current_user, require_permission
+from server.services.websocket_manager import notify_change
 
 router = APIRouter(prefix="/voyages", tags=["Voyages"])
 
@@ -173,6 +174,9 @@ async def create_voyage(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients
+    await notify_change("voyages", "created", voyage.id, changed_by=current_user.username)
+
     return voyage
 
 
@@ -218,6 +222,9 @@ async def update_voyage(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients
+    await notify_change("voyages", "updated", voyage.id, changed_by=current_user.username)
+
     return voyage
 
 
@@ -255,5 +262,8 @@ async def delete_voyage(
     )
     db.add(log_entry)
     await db.commit()
+
+    # Notifier tous les clients
+    await notify_change("voyages", "deleted", voyage_id, changed_by=current_user.username)
 
     return {"success": True, "message": f"Voyage {voyage_id} désactivé"}

@@ -13,6 +13,7 @@ from sqlalchemy import select, and_, or_
 from server.database import get_db
 from server.models import Mission, User, ActivityLog
 from server.routers.auth import get_current_user, require_permission
+from server.services.websocket_manager import notify_change
 
 router = APIRouter(prefix="/missions", tags=["Missions"])
 
@@ -219,6 +220,15 @@ async def create_mission(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients connectés
+    await notify_change(
+        entity_type="missions",
+        action="created",
+        entity_id=mission.id,
+        data={"date": str(mission.date_mission), "destination": mission.destination},
+        changed_by=current_user.username
+    )
+
     return mission
 
 
@@ -273,6 +283,15 @@ async def update_mission(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients connectés
+    await notify_change(
+        entity_type="missions",
+        action="updated",
+        entity_id=mission.id,
+        data={"date": str(mission.date_mission), "changes": list(update_data.keys())},
+        changed_by=current_user.username
+    )
+
     return mission
 
 
@@ -317,6 +336,15 @@ async def delete_mission(
     db.add(log_entry)
     await db.commit()
 
+    # Notifier tous les clients connectés
+    await notify_change(
+        entity_type="missions",
+        action="deleted",
+        entity_id=mission_id,
+        data=mission_info,
+        changed_by=current_user.username
+    )
+
     return {"success": True, "message": f"Mission {mission_id} supprimée"}
 
 
@@ -355,5 +383,13 @@ async def create_missions_bulk(
     )
     db.add(log_entry)
     await db.commit()
+
+    # Notifier tous les clients connectés
+    await notify_change(
+        entity_type="missions",
+        action="bulk_created",
+        data={"count": len(created_missions)},
+        changed_by=current_user.username
+    )
 
     return created_missions
