@@ -419,7 +419,7 @@ async def admin_login_page(request: Request):
     """, status_code=503)
 
 
-@app.get("/admin/users", response_class=HTMLResponse)
+@app.get("/admin/page/users", response_class=HTMLResponse)
 async def admin_users_page(request: Request):
     """Page de gestion des utilisateurs"""
     if templates:
@@ -427,7 +427,7 @@ async def admin_users_page(request: Request):
     return HTMLResponse("Page non disponible", status_code=503)
 
 
-@app.get("/admin/sessions", response_class=HTMLResponse)
+@app.get("/admin/page/sessions", response_class=HTMLResponse)
 async def admin_sessions_page(request: Request):
     """Page de gestion des sessions"""
     if templates:
@@ -435,7 +435,7 @@ async def admin_sessions_page(request: Request):
     return HTMLResponse("Page non disponible", status_code=503)
 
 
-@app.get("/admin/logs", response_class=HTMLResponse)
+@app.get("/admin/page/logs", response_class=HTMLResponse)
 async def admin_logs_page(request: Request):
     """Page des logs d'activité"""
     if templates:
@@ -443,7 +443,7 @@ async def admin_logs_page(request: Request):
     return HTMLResponse("Page non disponible", status_code=503)
 
 
-@app.get("/admin/backups", response_class=HTMLResponse)
+@app.get("/admin/page/backups", response_class=HTMLResponse)
 async def admin_backups_page(request: Request):
     """Page de gestion des backups"""
     if templates:
@@ -451,7 +451,7 @@ async def admin_backups_page(request: Request):
     return HTMLResponse("Page non disponible", status_code=503)
 
 
-@app.get("/admin/config", response_class=HTMLResponse)
+@app.get("/admin/page/config", response_class=HTMLResponse)
 async def admin_config_page(request: Request):
     """Page de configuration"""
     if templates:
