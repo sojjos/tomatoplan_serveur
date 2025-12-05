@@ -46,14 +46,14 @@ async function apiCall(endpoint, method = 'GET', data = null) {
 /**
  * Connexion utilisateur
  */
-async function login(username, hostname = null) {
+async function login(username, password, hostname = null) {
     try {
         const response = await fetch(`${API_BASE}/auth/login`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ username, hostname }),
+            body: JSON.stringify({ username, password, hostname }),
         });
 
         if (!response.ok) {
