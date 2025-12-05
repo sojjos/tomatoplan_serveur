@@ -1,5 +1,12 @@
 # TomatoPlan Client - Dependencies
 # Python 3.8+
 
+# Required
 requests>=2.28.0
 urllib3>=1.26.0
+
+# Optional - for full PTT features
+openpyxl>=3.0.0      # Export Excel
+reportlab>=3.6.0     # Export PDF
+matplotlib>=3.5.0    # Graphiques d'analyse
+pywin32>=300         # Integration Outlook (Windows uniquement)

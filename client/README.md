@@ -2,6 +2,13 @@
 
 Client Python pour TomatoPlan avec architecture client-serveur.
 
+## Versions disponibles
+
+| Version | Fichier | Description |
+|---------|---------|-------------|
+| **Complet** | `PTT_Client_Full.py` | Interface 100% identique a PTT v0.6.0 original |
+| Simple | `PTT_Client.py` | Interface allegee |
+
 ## Pre-requis
 
 - Windows 10/11
@@ -12,9 +19,10 @@ Client Python pour TomatoPlan avec architecture client-serveur.
 
 ### Methode 1: Automatique (recommandee)
 
-1. Telecharger le dossier `client/` sur votre PC
-2. Double-cliquer sur `install_windows.bat`
-3. Suivre les instructions
+1. Telecharger le depot complet sur votre PC
+2. Aller dans le dossier `client/`
+3. Double-cliquer sur `install_windows.bat`
+4. Suivre les instructions
 
 ### Methode 2: Manuelle
 
@@ -23,14 +31,27 @@ Client Python pour TomatoPlan avec architecture client-serveur.
 
 2. Ouvrir un terminal (cmd) et installer les dependances:
    ```
-   cd chemin/vers/client
+   cd chemin/vers/tomatoplan_serveur/client
    pip install -r requirements.txt
    ```
 
 3. Lancer l'application:
    ```
-   python PTT_Client.py
+   python PTT_Client_Full.py
    ```
+
+## Lancement
+
+Apres installation, utilisez:
+
+- **`Lancer_TomatoPlan.bat`** - Version complete (recommandee)
+- `Lancer_TomatoPlan_Simple.bat` - Version simplifiee
+
+Ou en ligne de commande:
+```
+python PTT_Client_Full.py    # Version complete
+python PTT_Client.py         # Version simplifiee
+```
 
 ## Utilisation
 
@@ -52,20 +73,38 @@ Si c'est votre premiere connexion:
    - Une minuscule
    - Un chiffre
 
-### Interface
+### Fonctionnalites (Version Complete)
 
-L'interface est identique a l'application PTT originale avec:
-- **Planning**: Gestion des missions par date
-- **Chauffeurs**: Liste et gestion des chauffeurs
-- **Voyages**: Configuration des destinations
+L'interface est 100% identique a PTT v0.6.0 avec tous les onglets:
+
+- **Planning** - Gestion des missions par date
+- **Suivi missions** - Suivi en temps reel
+- **Chauffeurs** - Gestion des chauffeurs et disponibilites
+- **Voyages** - Configuration des destinations
+- **Finance** - Tarifs SST, revenus palettes
+- **Analyse** - Graphiques et statistiques
+- **Admin** - Generation de planning
+- **Droits** - Gestion des utilisateurs
+- **SAURON** - Logs d'activite
 
 ## Configuration
 
-Pour modifier l'adresse du serveur, editez le fichier `PTT_Client.py`:
+Pour modifier l'adresse du serveur, editez le fichier `api_adapter.py`:
 
 ```python
 SERVER_URL = "https://54.37.231.92"  # Votre serveur
 VERIFY_SSL = False  # False pour certificats auto-signes
+```
+
+## Dependances optionnelles
+
+Pour toutes les fonctionnalites:
+
+```
+pip install openpyxl    # Export Excel
+pip install reportlab   # Export PDF
+pip install matplotlib  # Graphiques d'analyse
+pip install pywin32     # Integration Outlook
 ```
 
 ## Problemes courants
@@ -81,6 +120,10 @@ VERIFY_SSL = False  # False pour certificats auto-signes
 ### "Certificat SSL invalide"
 - Normal pour les certificats auto-signes
 - `VERIFY_SSL = False` est deja configure
+
+### "Module not found: api_adapter"
+- Assurez-vous de lancer depuis le dossier client/
+- Ou utilisez le fichier .bat fourni
 
 ## Support
 
