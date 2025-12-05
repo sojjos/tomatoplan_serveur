@@ -66,10 +66,19 @@ echo "  - Pare-feu UFW"
 echo "  - Service systemd"
 echo "  - TomatoPlan Server"
 echo ""
-read -p "Continuer ? (o/n) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Oo]$ ]]; then
-    exit 1
+
+# Vérifier si mode interactif ou automatique (pipe)
+if [ -t 0 ]; then
+    # Mode interactif - demander confirmation
+    read -p "Continuer ? (o/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Oo]$ ]]; then
+        exit 1
+    fi
+else
+    # Mode automatique (curl | bash) - continuer directement
+    echo "Mode automatique détecté - installation en cours..."
+    sleep 2
 fi
 
 # ============================================================
