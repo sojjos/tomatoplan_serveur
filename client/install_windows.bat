@@ -36,36 +36,23 @@ if errorlevel 1 (
 echo [OK] Dependances installees
 echo.
 
-REM Creer les raccourcis de lancement
-echo Creation des fichiers de lancement...
+REM Creer le raccourci de lancement
+echo Creation du fichier de lancement...
 
-REM Client complet (PTT original)
-(
-echo @echo off
-echo cd /d "%%~dp0\.."
-echo python client\PTT_Client_Full.py
-echo pause
-) > "Lancer_TomatoPlan.bat"
-
-REM Client simplifie
 (
 echo @echo off
 echo cd /d "%%~dp0"
-echo python PTT_Client.py
+echo python TomatoPlan_Client.py
 echo pause
-) > "Lancer_TomatoPlan_Simple.bat"
+) > "Lancer_TomatoPlan.bat"
 
 echo.
 echo ============================================
 echo   Installation terminee!
 echo ============================================
 echo.
-echo VERSION COMPLETE (recommandee):
+echo Pour lancer TomatoPlan:
 echo   Double-cliquez sur "Lancer_TomatoPlan.bat"
-echo   Interface 100%% identique a PTT v0.6.0
-echo.
-echo Version simplifiee:
-echo   Double-cliquez sur "Lancer_TomatoPlan_Simple.bat"
 echo.
 echo Serveur: https://54.37.231.92
 echo.

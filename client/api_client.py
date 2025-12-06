@@ -1,34 +1,31 @@
 """
-API Adapter - Module d'adaptation pour PTT_v0.6.0.py
+Client API TomatoPlan
+=====================
 
-Ce module remplace les fonctions de lecture/ecriture de fichiers JSON
-par des appels API vers le serveur TomatoPlan.
-
-Il permet d'utiliser l'interface originale de PTT avec le serveur.
+Module pour communiquer avec le serveur TomatoPlan via REST API et WebSocket.
 """
 
-import os
 import json
-import getpass
 import socket
+import ssl
 import threading
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Dict, List, Optional, Any, Callable
+
 import requests
 import urllib3
 
+from config import (
+    SERVER_URL,
+    VERIFY_SSL,
+    TIMEOUT,
+    STATUS_CHECK_INTERVAL,
+    CACHE_TTL,
+    WS_RECONNECT_DELAY,
+)
+
 # Desactiver les warnings SSL pour certificats auto-signes
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-SERVER_URL = "https://54.37.231.92"
-VERIFY_SSL = False
-TIMEOUT = 30
 
 
 # ============================================================================
@@ -36,7 +33,7 @@ TIMEOUT = 30
 # ============================================================================
 
 class APIClient:
-    """Client API pour TomatoPlan"""
+    """Client API REST pour TomatoPlan (singleton)"""
 
     _instance = None
 
@@ -54,18 +51,18 @@ class APIClient:
         self.server_url = SERVER_URL.rstrip("/")
         self.verify_ssl = VERIFY_SSL
         self.timeout = TIMEOUT
-        self.token = None
-        self.user_info = None
+        self.token: Optional[str] = None
+        self.user_info: Optional[Dict] = None
         self.must_change_password = False
         self._session = requests.Session()
         self._lock = threading.Lock()
 
         # Cache local
-        self._cache = {}
-        self._cache_timestamps = {}
-        self._cache_ttl = 30  # seconds
+        self._cache: Dict[str, Any] = {}
+        self._cache_timestamps: Dict[str, float] = {}
+        self._cache_ttl = CACHE_TTL
 
-    def _headers(self):
+    def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -125,7 +122,7 @@ class APIClient:
             raise TimeoutError(f"Le serveur ne repond pas (timeout: {self.timeout}s)")
 
     def invalidate_cache(self, pattern: str = None):
-        """Invalide le cache"""
+        """Invalide le cache (tout ou par pattern)"""
         with self._lock:
             if pattern:
                 keys_to_remove = [k for k in self._cache.keys() if pattern in k]
@@ -138,6 +135,18 @@ class APIClient:
                 self._cache_timestamps.clear()
 
     # ========== Authentification ==========
+
+    def check_server(self) -> Dict:
+        """Verifie si le serveur est accessible"""
+        try:
+            response = requests.get(
+                f"{self.server_url}/health",
+                timeout=5,
+                verify=self.verify_ssl
+            )
+            return response.json()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     def login(self, username: str, password: str) -> bool:
         """Connexion au serveur"""
@@ -177,19 +186,7 @@ class APIClient:
             return True
         return False
 
-    def check_server(self):
-        """Verifier le serveur"""
-        try:
-            response = requests.get(
-                f"{self.server_url}/health",
-                timeout=5,
-                verify=self.verify_ssl
-            )
-            return response.json()
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def get_permissions(self) -> dict:
+    def get_permissions(self) -> Dict:
         """Retourne les permissions de l'utilisateur"""
         if not self.user_info:
             return {}
@@ -250,7 +247,7 @@ class APIClient:
         return self._request("GET", "/chauffeurs", params={"active_only": active_only}, use_cache=True) or []
 
     def get_chauffeurs_disponibles(self, d: date) -> Dict:
-        """Recupere les chauffeurs disponibles"""
+        """Recupere les chauffeurs disponibles a une date"""
         return self._request("GET", f"/chauffeurs/disponibles/{d.isoformat()}") or {"disponibles": [], "indisponibles": []}
 
     def get_chauffeur_disponibilites(self, chauffeur_id: int, date_debut=None, date_fin=None) -> List[Dict]:
@@ -303,14 +300,6 @@ class APIClient:
         self.invalidate_cache("/sst")
         return self._request("PUT", f"/sst/{sst_id}", data)
 
-    def create_tarif_sst(self, data: Dict) -> Dict:
-        """Cree un tarif SST"""
-        return self._request("POST", "/sst/tarifs", data)
-
-    def update_tarif_sst(self, tarif_id: int, data: Dict) -> Dict:
-        """Met a jour un tarif SST"""
-        return self._request("PUT", f"/sst/tarifs/{tarif_id}", data)
-
     # ========== Finance ==========
 
     def get_revenus_palettes(self) -> List[Dict]:
@@ -321,11 +310,6 @@ class APIClient:
         """Cree un revenu palette"""
         self.invalidate_cache("/finance")
         return self._request("POST", "/finance/revenus", data)
-
-    def update_revenu_palette(self, revenu_id: int, data: Dict) -> Dict:
-        """Met a jour un revenu palette"""
-        self.invalidate_cache("/finance")
-        return self._request("PUT", f"/finance/revenus/{revenu_id}", data)
 
     def get_finance_stats(self, date_debut: date, date_fin: date) -> Dict:
         """Recupere les statistiques financieres"""
@@ -365,26 +349,13 @@ class APIClient:
         """Met a jour un utilisateur"""
         return self._request("PUT", f"/admin/users/{user_id}", data)
 
-    def get_activity_logs(self, limit: int = 50, **filters) -> Dict:
-        """Recupere les logs d'activite"""
-        params = {"limit": limit}
-        params.update(filters)
-        return self._request("GET", "/admin/logs", params=params) or {"logs": [], "total": 0}
-
-
-# Instance globale
-api_client = APIClient()
-
 
 # ============================================================================
-# ACTIVITY LOGGER ADAPTER
+# MONITEUR DE CONNEXION
 # ============================================================================
 
-class ActivityLoggerAPI:
-    """
-    Remplace ActivityLogger pour utiliser l'API.
-    Les logs sont envoyes au serveur au lieu d'etre stockes localement.
-    """
+class ConnectionMonitor:
+    """Moniteur de statut de connexion (singleton)"""
 
     _instance = None
 
@@ -398,72 +369,258 @@ class ActivityLoggerAPI:
         if self._initialized:
             return
         self._initialized = True
-        self.current_user = None
-        self.session_id = None
-        self.logs_dir = None  # Pour compatibilite
+        self._is_online = False
+        self._last_check = None
+        self._check_interval = STATUS_CHECK_INTERVAL
+        self._callbacks: List[Callable] = []
+        self._stop_event = threading.Event()
+        self._thread = None
 
-    def initialize(self, root_dir, username):
-        """Initialiser le logger"""
-        self.current_user = username.upper()
-        self.session_id = None  # Gere par le serveur
-        # Le serveur gere le session start via le login
+    def start(self):
+        """Demarre le monitoring"""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
 
-    def log_action(self, action_type, details=None, before_state=None, after_state=None):
-        """Logger une action - les actions importantes sont logguees via l'API automatiquement"""
-        # Les actions CRUD sont deja logguees cote serveur
-        # On peut ignorer les logs locaux ou les afficher en console
-        pass
+    def stop(self):
+        """Arrete le monitoring"""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2)
 
-    def log_session_end(self):
-        """Fin de session - gere par logout"""
+    def _monitor_loop(self):
+        while not self._stop_event.is_set():
+            self._check_connection()
+            self._stop_event.wait(self._check_interval)
+
+    def _check_connection(self):
+        old_status = self._is_online
         try:
-            api_client.logout()
+            result = api_client.check_server()
+            self._is_online = result.get("status") == "ok"
         except Exception:
-            pass
+            self._is_online = False
 
-    def get_all_users_logs(self):
-        """Recuperer les logs depuis le serveur"""
-        try:
-            result = api_client.get_activity_logs(limit=500)
-            return {"logs": result.get("logs", [])}
-        except Exception:
-            return {}
+        self._last_check = datetime.now()
 
-    def get_active_sessions(self):
-        """Recuperer les sessions actives"""
-        try:
-            return api_client._request("GET", "/admin/sessions") or []
-        except Exception:
-            return []
+        if old_status != self._is_online:
+            for callback in self._callbacks:
+                try:
+                    callback(self._is_online)
+                except Exception:
+                    pass
 
-    def get_user_stats(self, username):
-        """Recuperer les stats d'un utilisateur"""
-        try:
-            return api_client._request("GET", f"/stats/users/{username}")
-        except Exception:
-            return None
+    def add_callback(self, callback: Callable):
+        """Ajoute un callback pour changement de statut"""
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    @property
+    def is_online(self) -> bool:
+        return self._is_online
+
+    @property
+    def status_text(self) -> str:
+        return "En ligne" if self._is_online else "Hors ligne"
+
+    def force_check(self) -> bool:
+        self._check_connection()
+        return self._is_online
 
 
 # ============================================================================
-# FONCTIONS DE REMPLACEMENT POUR PTT
+# CLIENT WEBSOCKET (Synchronisation temps reel)
 # ============================================================================
 
-def get_api_client() -> APIClient:
-    """Retourne le client API global"""
-    return api_client
+class LiveSyncClient:
+    """Client WebSocket pour synchronisation multi-utilisateur (singleton)"""
 
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+
+        self._ws = None
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._connected = False
+        self._reconnect_delay = WS_RECONNECT_DELAY
+
+        self._on_data_changed_callbacks: List[Callable] = []
+        self._on_user_event_callbacks: List[Callable] = []
+        self._on_connection_changed_callbacks: List[Callable] = []
+        self._connected_users: List[str] = []
+
+    def start(self):
+        """Demarre la connexion WebSocket"""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._connection_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Arrete la connexion"""
+        self._stop_event.set()
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    def _connection_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                self._connect()
+            except Exception as e:
+                print(f"[WS] Erreur connexion: {e}")
+
+            if not self._stop_event.is_set():
+                self._stop_event.wait(self._reconnect_delay)
+
+    def _connect(self):
+        try:
+            import websocket
+        except ImportError:
+            print("[WS] websocket-client non installe, mode temps reel desactive")
+            return
+
+        ws_url = SERVER_URL.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_url}/ws"
+
+        if api_client.token:
+            ws_url = f"{ws_url}?token={api_client.token}"
+
+        self._ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close
+        )
+
+        ssl_opt = {"cert_reqs": ssl.CERT_NONE} if not VERIFY_SSL else None
+        self._ws.run_forever(sslopt=ssl_opt)
+
+    def _on_open(self, ws):
+        self._connected = True
+        print("[WS] Connecte - Mode temps reel actif")
+        for callback in self._on_connection_changed_callbacks:
+            try:
+                callback(True)
+            except Exception:
+                pass
+
+    def _on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            msg_type = data.get("type", "")
+
+            if msg_type == "welcome":
+                self._connected_users = data.get("connected_users", [])
+
+            elif msg_type == "data_changed":
+                change_data = data.get("data", {})
+                entity = change_data.get("entity", "")
+                action = change_data.get("action", "")
+
+                api_client.invalidate_cache(f"/{entity}")
+
+                for callback in self._on_data_changed_callbacks:
+                    try:
+                        callback(entity, action, change_data)
+                    except Exception:
+                        pass
+
+            elif msg_type == "user_connected":
+                username = data.get("data", {}).get("username", "")
+                for callback in self._on_user_event_callbacks:
+                    try:
+                        callback("connected", username)
+                    except Exception:
+                        pass
+
+            elif msg_type == "user_disconnected":
+                username = data.get("data", {}).get("username", "")
+                for callback in self._on_user_event_callbacks:
+                    try:
+                        callback("disconnected", username)
+                    except Exception:
+                        pass
+
+            elif msg_type == "refresh_required":
+                api_client.invalidate_cache()
+                for callback in self._on_data_changed_callbacks:
+                    try:
+                        callback("all", "refresh", data.get("data", {}))
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            print(f"[WS] Erreur message: {e}")
+
+    def _on_error(self, ws, error):
+        print(f"[WS] Erreur: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        self._connected = False
+        for callback in self._on_connection_changed_callbacks:
+            try:
+                callback(False)
+            except Exception:
+                pass
+
+    def on_data_changed(self, callback: Callable):
+        """Enregistre callback pour changements de donnees"""
+        if callback not in self._on_data_changed_callbacks:
+            self._on_data_changed_callbacks.append(callback)
+
+    def on_user_event(self, callback: Callable):
+        """Enregistre callback pour evenements utilisateur"""
+        if callback not in self._on_user_event_callbacks:
+            self._on_user_event_callbacks.append(callback)
+
+    def on_connection_changed(self, callback: Callable):
+        """Enregistre callback pour changement de connexion"""
+        if callback not in self._on_connection_changed_callbacks:
+            self._on_connection_changed_callbacks.append(callback)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def connected_users(self) -> List[str]:
+        return self._connected_users.copy()
+
+    @property
+    def connected_users_count(self) -> int:
+        return len(self._connected_users)
+
+
+# ============================================================================
+# FONCTIONS D'ADAPTATION POUR PTT
+# ============================================================================
 
 def api_load_json(filename, default=None):
-    """
-    Remplace load_json pour utiliser l'API.
-    Detecte le type de fichier et appelle l'API appropriee.
-    """
+    """Remplace load_json pour utiliser l'API"""
     filename_str = str(filename).lower()
 
     try:
         if "voyages.json" in filename_str:
             voyages = api_client.get_voyages(active_only=False)
-            # Convertir au format PTT
             return [
                 {
                     "code": v.get("code", ""),
@@ -496,7 +653,6 @@ def api_load_json(filename, default=None):
             ]
 
         elif "dispo_chauffeurs.json" in filename_str:
-            # Les disponibilites sont gerees differemment
             return []
 
         elif "sst.json" in filename_str:
@@ -505,7 +661,6 @@ def api_load_json(filename, default=None):
 
         elif "tarifs_sst.json" in filename_str:
             tarifs = api_client.get_sst_tarifs()
-            # Convertir au format PTT
             result = {}
             for t in tarifs:
                 sst_code = t.get("sst_code", "")
@@ -522,15 +677,12 @@ def api_load_json(filename, default=None):
             return result
 
         elif "users_rights.json" in filename_str:
-            # Les droits sont geres par le serveur
             users = api_client.get_users()
             roles = api_client.get_roles()
 
             roles_def = {}
             for r in roles:
-                roles_def[r.get("name", "")] = {
-                    "view_planning": True,  # Simplifie
-                }
+                roles_def[r.get("name", "")] = {"view_planning": True}
 
             users_def = {}
             for u in users:
@@ -539,11 +691,9 @@ def api_load_json(filename, default=None):
             return {"roles": roles_def, "users": users_def}
 
         elif "missions.json" in filename_str or "/planning/" in filename_str:
-            # Les missions sont chargees par date
             return default if default is not None else []
 
         else:
-            # Fichier non gere - retourner default
             return default if default is not None else {}
 
     except Exception as e:
@@ -552,53 +702,29 @@ def api_load_json(filename, default=None):
 
 
 def api_save_json(filename, data):
-    """
-    Remplace save_json pour utiliser l'API.
-    Detecte le type de fichier et appelle l'API appropriee.
-    """
+    """Remplace save_json pour utiliser l'API"""
     filename_str = str(filename).lower()
 
     try:
         if "voyages.json" in filename_str:
-            # Mise a jour des voyages
-            for v in data:
-                voyage_data = {
-                    "code": v.get("code", ""),
-                    "nom": v.get("code", ""),
-                    "description": v.get("description", ""),
-                    "pays_destination": v.get("country", "Belgique"),
-                    "is_active": v.get("actif", True),
-                }
-                # On ne cree pas automatiquement ici
-                # Les voyages sont crees via l'interface
             api_client.invalidate_cache("/voyages")
-
         elif "chauffeurs.json" in filename_str:
             api_client.invalidate_cache("/chauffeurs")
-
         elif "missions.json" in filename_str:
             api_client.invalidate_cache("/missions")
-
-        # Autres fichiers ignores
-
     except Exception as e:
         print(f"[API] Erreur sauvegarde {filename}: {e}")
 
 
 def api_list_existing_dates() -> List[str]:
-    """
-    Remplace list_existing_dates.
-    Recupere les dates avec des missions depuis l'API.
-    """
+    """Liste les dates avec des missions"""
     try:
-        # Recuperer les missions des 90 derniers jours et 30 prochains
         today = date.today()
         date_debut = today - timedelta(days=90)
         date_fin = today + timedelta(days=30)
 
         missions = api_client.get_missions(date_debut=date_debut, date_fin=date_fin)
 
-        # Extraire les dates uniques
         dates_set = set()
         for m in missions:
             d = m.get("date_mission")
@@ -610,9 +736,7 @@ def api_list_existing_dates() -> List[str]:
                         continue
                 dates_set.add(d.strftime("%d/%m/%Y"))
 
-        # Trier
-        dates_list = sorted(dates_set, key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
-        return dates_list
+        return sorted(dates_set, key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
 
     except Exception as e:
         print(f"[API] Erreur list_existing_dates: {e}")
@@ -622,408 +746,81 @@ def api_list_existing_dates() -> List[str]:
 def api_get_planning_for_date(d: date) -> List[Dict]:
     """Recupere le planning d'une date"""
     try:
-        missions = api_client.get_missions_by_date(d)
-        return missions
+        return api_client.get_missions_by_date(d)
     except Exception as e:
         print(f"[API] Erreur get_planning_for_date: {e}")
         return []
 
 
-def api_save_planning_for_date(d: date, missions: List[Dict]):
-    """Sauvegarde le planning d'une date"""
-    # Les missions sont sauvegardees individuellement via create/update/delete
-    pass
+# ============================================================================
+# ACTIVITY LOGGER
+# ============================================================================
+
+class ActivityLogger:
+    """Logger d'activite compatible avec PTT"""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self.current_user = None
+        self.logs_dir = None
+
+    def initialize(self, root_dir, username):
+        self.current_user = username.upper()
+
+    def log_action(self, action_type, details=None, before_state=None, after_state=None):
+        pass  # Les actions sont logguees cote serveur
+
+    def log_session_end(self):
+        try:
+            api_client.logout()
+        except Exception:
+            pass
 
 
 # ============================================================================
-# HELPERS
+# INSTANCES GLOBALES
+# ============================================================================
+
+api_client = APIClient()
+connection_monitor = ConnectionMonitor()
+live_sync = LiveSyncClient()
+activity_logger = ActivityLogger()
+
+
+# ============================================================================
+# FONCTIONS UTILITAIRES
 # ============================================================================
 
 def is_connected() -> bool:
-    """Verifie si le client est connecte"""
+    """Verifie si connecte au serveur"""
     return api_client.token is not None
 
 
+def is_online() -> bool:
+    """Verifie si le serveur est accessible"""
+    return connection_monitor.is_online
+
+
 def get_current_user() -> str:
-    """Retourne l'utilisateur courant"""
+    """Retourne le nom d'utilisateur courant"""
     if api_client.user_info:
         return api_client.user_info.get("username", "INCONNU")
     return "INCONNU"
 
 
-def get_user_permissions() -> dict:
+def get_user_permissions() -> Dict:
     """Retourne les permissions de l'utilisateur"""
     return api_client.get_permissions()
-
-
-# ============================================================================
-# CONNECTION STATUS MONITOR
-# ============================================================================
-
-class ConnectionStatusMonitor:
-    """
-    Moniteur de statut de connexion en temps reel.
-    Verifie periodiquement si le serveur est accessible.
-    """
-
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-        self._initialized = True
-        self._is_online = False
-        self._last_check = None
-        self._check_interval = 5  # seconds
-        self._callbacks = []
-        self._stop_event = threading.Event()
-        self._thread = None
-
-    def start(self):
-        """Demarre le monitoring en arriere-plan"""
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        """Arrete le monitoring"""
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=2)
-
-    def _monitor_loop(self):
-        """Boucle de monitoring"""
-        while not self._stop_event.is_set():
-            self._check_connection()
-            self._stop_event.wait(self._check_interval)
-
-    def _check_connection(self):
-        """Verifie la connexion au serveur"""
-        old_status = self._is_online
-        try:
-            result = api_client.check_server()
-            self._is_online = result.get("status") == "ok"
-        except Exception:
-            self._is_online = False
-
-        self._last_check = datetime.now()
-
-        # Notifier si le statut a change
-        if old_status != self._is_online:
-            for callback in self._callbacks:
-                try:
-                    callback(self._is_online)
-                except Exception:
-                    pass
-
-    def add_callback(self, callback):
-        """Ajoute un callback appele quand le statut change"""
-        if callback not in self._callbacks:
-            self._callbacks.append(callback)
-
-    def remove_callback(self, callback):
-        """Retire un callback"""
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
-
-    @property
-    def is_online(self) -> bool:
-        """Retourne True si le serveur est accessible"""
-        return self._is_online
-
-    @property
-    def status_text(self) -> str:
-        """Retourne le texte de statut"""
-        if self._is_online:
-            return "En ligne"
-        return "Hors ligne"
-
-    @property
-    def status_color(self) -> str:
-        """Retourne la couleur du statut (green/red)"""
-        return "green" if self._is_online else "red"
-
-    def force_check(self) -> bool:
-        """Force une verification immediate"""
-        self._check_connection()
-        return self._is_online
-
-
-# Instance globale du moniteur
-connection_monitor = ConnectionStatusMonitor()
-
-
-def is_online() -> bool:
-    """Retourne True si le client est connecte au serveur"""
-    return connection_monitor.is_online
-
-
-def get_connection_status() -> str:
-    """Retourne le texte de statut de connexion"""
-    return connection_monitor.status_text
-
-
-# ============================================================================
-# WEBSOCKET CLIENT - SYNCHRONISATION TEMPS REEL
-# ============================================================================
-
-class LiveSyncClient:
-    """
-    Client WebSocket pour la synchronisation temps reel multi-utilisateur.
-
-    Quand un autre utilisateur fait une modification, ce client recoit
-    une notification et declenche un callback pour rafraichir l'interface.
-    """
-
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-        self._initialized = True
-
-        self._ws = None
-        self._thread = None
-        self._stop_event = threading.Event()
-        self._connected = False
-        self._reconnect_delay = 5
-
-        # Callbacks pour les differents types d'evenements
-        self._on_data_changed_callbacks = []
-        self._on_user_event_callbacks = []
-        self._on_connection_changed_callbacks = []
-
-        # Liste des utilisateurs connectes
-        self._connected_users = []
-
-    def start(self):
-        """Demarre la connexion WebSocket"""
-        if self._thread and self._thread.is_alive():
-            return
-
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._connection_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        """Arrete la connexion WebSocket"""
-        self._stop_event.set()
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-        if self._thread:
-            self._thread.join(timeout=3)
-
-    def _connection_loop(self):
-        """Boucle de connexion avec reconnexion automatique"""
-        while not self._stop_event.is_set():
-            try:
-                self._connect()
-            except Exception as e:
-                print(f"[WS] Erreur connexion: {e}")
-
-            if not self._stop_event.is_set():
-                # Attendre avant de se reconnecter
-                self._stop_event.wait(self._reconnect_delay)
-
-    def _connect(self):
-        """Etablit la connexion WebSocket"""
-        try:
-            import websocket
-        except ImportError:
-            print("[WS] websocket-client non installe, mode temps reel desactive")
-            return
-
-        # Construire l'URL WebSocket
-        ws_url = SERVER_URL.replace("https://", "wss://").replace("http://", "ws://")
-        ws_url = f"{ws_url}/ws"
-
-        # Ajouter le token si disponible
-        if api_client.token:
-            ws_url = f"{ws_url}?token={api_client.token}"
-
-        print(f"[WS] Connexion a {ws_url}")
-
-        # Creer la connexion
-        self._ws = websocket.WebSocketApp(
-            ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
-
-        # Options SSL pour certificats auto-signes
-        import ssl
-        ssl_opt = {"cert_reqs": ssl.CERT_NONE} if not VERIFY_SSL else None
-
-        # Lancer la boucle de reception
-        self._ws.run_forever(sslopt=ssl_opt)
-
-    def _on_open(self, ws):
-        """Callback quand la connexion est etablie"""
-        self._connected = True
-        print("[WS] Connecte au serveur - Mode temps reel actif")
-
-        # Notifier les callbacks
-        for callback in self._on_connection_changed_callbacks:
-            try:
-                callback(True)
-            except Exception:
-                pass
-
-    def _on_message(self, ws, message):
-        """Callback quand un message est recu"""
-        try:
-            data = json.loads(message)
-            msg_type = data.get("type", "")
-
-            if msg_type == "welcome":
-                # Message de bienvenue avec liste des utilisateurs
-                self._connected_users = data.get("connected_users", [])
-                print(f"[WS] {len(self._connected_users)} utilisateur(s) connecte(s)")
-
-            elif msg_type == "data_changed":
-                # Notification de changement de donnees
-                change_data = data.get("data", {})
-                entity = change_data.get("entity", "")
-                action = change_data.get("action", "")
-                changed_by = change_data.get("changed_by", "inconnu")
-
-                print(f"[WS] Changement: {entity}/{action} par {changed_by}")
-
-                # Invalider le cache pour cette entite
-                api_client.invalidate_cache(f"/{entity}")
-
-                # Notifier les callbacks
-                for callback in self._on_data_changed_callbacks:
-                    try:
-                        callback(entity, action, change_data)
-                    except Exception as e:
-                        print(f"[WS] Erreur callback: {e}")
-
-            elif msg_type == "user_connected":
-                user_data = data.get("data", {})
-                username = user_data.get("username", "")
-                print(f"[WS] Utilisateur connecte: {username}")
-
-                for callback in self._on_user_event_callbacks:
-                    try:
-                        callback("connected", username)
-                    except Exception:
-                        pass
-
-            elif msg_type == "user_disconnected":
-                user_data = data.get("data", {})
-                username = user_data.get("username", "")
-                print(f"[WS] Utilisateur deconnecte: {username}")
-
-                for callback in self._on_user_event_callbacks:
-                    try:
-                        callback("disconnected", username)
-                    except Exception:
-                        pass
-
-            elif msg_type == "connected_users":
-                self._connected_users = data.get("users", [])
-
-            elif msg_type == "pong":
-                pass  # Reponse au ping
-
-            elif msg_type == "refresh_required":
-                # Rafraichissement global requis
-                print("[WS] Rafraichissement requis")
-                api_client.invalidate_cache()
-
-                for callback in self._on_data_changed_callbacks:
-                    try:
-                        callback("all", "refresh", data.get("data", {}))
-                    except Exception:
-                        pass
-
-        except json.JSONDecodeError:
-            print(f"[WS] Message invalide: {message[:100]}")
-        except Exception as e:
-            print(f"[WS] Erreur traitement message: {e}")
-
-    def _on_error(self, ws, error):
-        """Callback en cas d'erreur"""
-        print(f"[WS] Erreur: {error}")
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        """Callback quand la connexion est fermee"""
-        self._connected = False
-        print(f"[WS] Deconnecte (code: {close_status_code})")
-
-        for callback in self._on_connection_changed_callbacks:
-            try:
-                callback(False)
-            except Exception:
-                pass
-
-    def on_data_changed(self, callback):
-        """
-        Enregistre un callback pour les changements de donnees.
-
-        Le callback recoit: (entity_type, action, data)
-        - entity_type: "missions", "chauffeurs", "voyages", etc.
-        - action: "created", "updated", "deleted"
-        - data: dictionnaire avec les details du changement
-        """
-        if callback not in self._on_data_changed_callbacks:
-            self._on_data_changed_callbacks.append(callback)
-
-    def on_user_event(self, callback):
-        """
-        Enregistre un callback pour les evenements utilisateur.
-
-        Le callback recoit: (event_type, username)
-        - event_type: "connected", "disconnected"
-        - username: nom de l'utilisateur
-        """
-        if callback not in self._on_user_event_callbacks:
-            self._on_user_event_callbacks.append(callback)
-
-    def on_connection_changed(self, callback):
-        """
-        Enregistre un callback pour les changements de connexion.
-
-        Le callback recoit: (is_connected: bool)
-        """
-        if callback not in self._on_connection_changed_callbacks:
-            self._on_connection_changed_callbacks.append(callback)
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
-
-    @property
-    def connected_users(self) -> list:
-        return self._connected_users.copy()
-
-    @property
-    def connected_users_count(self) -> int:
-        return len(self._connected_users)
-
-
-# Instance globale du client live
-live_sync = LiveSyncClient()
 
 
 def start_live_sync():
@@ -1034,8 +831,3 @@ def start_live_sync():
 def stop_live_sync():
     """Arrete la synchronisation temps reel"""
     live_sync.stop()
-
-
-def on_data_changed(callback):
-    """Enregistre un callback pour les changements de donnees"""
-    live_sync.on_data_changed(callback)

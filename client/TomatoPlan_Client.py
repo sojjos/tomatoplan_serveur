@@ -1,48 +1,38 @@
 #!/usr/bin/env python3
 """
-PTT Client Complet - Version Client-Serveur
-============================================
+TomatoPlan Client
+=================
 
-Ce script lance l'application PTT_v0.6.0.py complete mais connectee
-au serveur TomatoPlan via API REST.
-
-L'interface est 100% identique a l'original, seul le stockage des
-donnees passe par le serveur au lieu des fichiers JSON locaux.
+Application client pour TomatoPlan connectee au serveur via API REST.
+Lance l'interface PTT avec synchronisation temps reel multi-utilisateur.
 
 Usage:
-    python PTT_Client_Full.py
-
-Configuration:
-    Modifiez SERVER_URL dans api_adapter.py pour pointer vers votre serveur.
+    python TomatoPlan_Client.py
 """
 
-import sys
 import os
+import sys
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
-import threading
 from pathlib import Path
 
 # Ajouter le dossier client au path
 CLIENT_DIR = Path(__file__).parent
 sys.path.insert(0, str(CLIENT_DIR))
 
-# Importer l'adaptateur API
-from api_adapter import (
+from config import SERVER_URL, CLIENT_VERSION
+from api_client import (
     api_client,
     api_load_json,
     api_save_json,
     api_list_existing_dates,
     api_get_planning_for_date,
-    ActivityLoggerAPI,
-    get_current_user,
-    get_user_permissions,
-    SERVER_URL,
-    VERIFY_SSL,
+    ActivityLogger,
     connection_monitor,
-    is_online,
-    get_connection_status,
     live_sync,
+    is_online,
+    get_current_user,
     start_live_sync,
     stop_live_sync,
 )
@@ -62,7 +52,7 @@ class LoginWindow:
         self.root.geometry("420x380")
         self.root.resizable(False, False)
 
-        # Centrer
+        # Centrer la fenetre
         self.root.update_idletasks()
         x = (self.root.winfo_screenwidth() // 2) - 210
         y = (self.root.winfo_screenheight() // 2) - 190
@@ -72,15 +62,15 @@ class LoginWindow:
         self._check_server()
 
     def _build_ui(self):
-        # Logo/Titre
+        # Titre
         title_frame = ttk.Frame(self.root)
         title_frame.pack(pady=20)
 
         ttk.Label(title_frame, text="TomatoPlan", font=("Arial", 28, "bold")).pack()
         ttk.Label(title_frame, text="Planning Transport Tubize", font=("Arial", 11)).pack()
-        ttk.Label(title_frame, text="v0.6.0 - Mode Client-Serveur", font=("Arial", 9), foreground="gray").pack()
+        ttk.Label(title_frame, text=f"Client v{CLIENT_VERSION}", font=("Arial", 9), foreground="gray").pack()
 
-        # Status serveur
+        # Statut serveur
         status_frame = ttk.Frame(self.root)
         status_frame.pack(pady=10)
 
@@ -133,7 +123,7 @@ class LoginWindow:
                 if status.get("status") == "ok":
                     self.root.after(0, lambda: self._update_status(True, "Serveur connecte"))
                 else:
-                    self.root.after(0, lambda: self._update_status(False, f"Serveur indisponible: {status.get('message', '')}"))
+                    self.root.after(0, lambda: self._update_status(False, f"Serveur indisponible"))
             except Exception as e:
                 self.root.after(0, lambda: self._update_status(False, f"Erreur: {str(e)[:50]}"))
 
@@ -171,8 +161,8 @@ class LoginWindow:
                     self.root.after(0, lambda: self._on_error("Echec de l'authentification"))
             except PermissionError as e:
                 self.root.after(0, lambda: self._on_error(str(e)))
-            except ConnectionError as e:
-                self.root.after(0, lambda: self._on_error(f"Connexion impossible"))
+            except ConnectionError:
+                self.root.after(0, lambda: self._on_error("Connexion impossible"))
             except Exception as e:
                 self.root.after(0, lambda: self._on_error(str(e)[:100]))
 
@@ -256,44 +246,21 @@ class LoginWindow:
 
 
 # ============================================================================
-# PATCH DES FONCTIONS PTT
+# PATCH PTT
 # ============================================================================
 
 def patch_ptt_module():
-    """
-    Patche le module PTT pour utiliser l'API.
-    Cette fonction modifie les fonctions globales de PTT_v0.6.0.py.
-    """
-    # Le chemin vers PTT_v0.6.0.py (dans le dossier parent)
+    """Patche PTT_v0.6.0.py pour utiliser l'API"""
     ptt_path = CLIENT_DIR.parent / "PTT_v0.6.0.py"
 
     if not ptt_path.exists():
         raise FileNotFoundError(f"PTT_v0.6.0.py non trouve: {ptt_path}")
 
-    # Lire le code source
     with open(ptt_path, "r", encoding="utf-8") as f:
         ptt_source = f.read()
 
-    # Creer un module compile
-    import types
-    ptt_module = types.ModuleType("ptt_patched")
-    ptt_module.__file__ = str(ptt_path)
-
-    # Ajouter nos fonctions de remplacement au namespace AVANT l'execution
-    ptt_module.load_json = api_load_json
-    ptt_module.save_json = api_save_json
-    ptt_module.list_existing_dates = api_list_existing_dates
-
-    # Remplacer ActivityLogger
-    ptt_module.ActivityLogger = ActivityLoggerAPI
-    ptt_module.activity_logger = ActivityLoggerAPI()
-
-    # Executer le code PTT dans le namespace du module
-    # On modifie le source pour remplacer les fonctions
-    patched_source = ptt_source
-
-    # Remplacer les definitions de fonctions
-    patched_source = patched_source.replace(
+    # Remplacer les definitions de fonctions originales
+    patched_source = ptt_source.replace(
         "def load_json(filename, default=None):",
         "def _original_load_json(filename, default=None):  # PATCHED"
     )
@@ -306,7 +273,7 @@ def patch_ptt_module():
         "def _original_list_existing_dates():  # PATCHED"
     )
 
-    # Ajouter nos imports et fonctions au debut
+    # Header avec imports et fonctions patchees
     header = '''
 # ===== PATCHED FOR CLIENT-SERVER MODE =====
 import sys as _sys
@@ -314,48 +281,39 @@ _client_dir = _sys.path[0] if _sys.path else "."
 if _client_dir not in _sys.path:
     _sys.path.insert(0, _client_dir)
 
-from api_adapter import (
+from api_client import (
     api_load_json as load_json,
     api_save_json as save_json,
     api_list_existing_dates as list_existing_dates,
     api_get_planning_for_date,
-    ActivityLoggerAPI,
-    get_current_user as _api_get_current_user,
-    get_user_permissions as _api_get_permissions,
+    ActivityLogger,
     api_client as _api_client,
     connection_monitor as _connection_monitor,
     is_online as _is_online,
-    get_connection_status as _get_connection_status,
     live_sync as _live_sync,
     start_live_sync as _start_live_sync,
 )
 
 # Remplacer ActivityLogger
-class ActivityLogger(ActivityLoggerAPI):
-    pass
-
 activity_logger = ActivityLogger()
 
-# Variable globale pour stocker la reference a l'app principale
+# Reference a l'app principale
 _ptt_app_instance = None
 
 # ===== LIVE SYNC - AUTO REFRESH =====
 
 def _on_data_changed(entity_type, action, data):
-    """Callback appele quand des donnees changent sur le serveur"""
+    """Callback quand des donnees changent sur le serveur"""
     global _ptt_app_instance
     if not _ptt_app_instance:
         return
 
     changed_by = data.get("changed_by", "")
-
-    # Ne pas rafraichir si c'est nous qui avons fait le changement
     if changed_by == _ptt_app_instance.current_user:
         return
 
-    print(f"[LIVE] Changement detecte: {entity_type}/{action} par {changed_by}")
+    print(f"[LIVE] Changement: {entity_type}/{action} par {changed_by}")
 
-    # Rafraichir l'interface via root.after pour thread-safety
     def do_refresh():
         try:
             if hasattr(_ptt_app_instance, 'refresh_all'):
@@ -371,7 +329,7 @@ def _on_data_changed(entity_type, action, data):
 # ===== LIVE STATUS INDICATOR =====
 
 def _update_live_status(app):
-    """Met a jour l'indicateur de statut en ligne/hors ligne"""
+    """Met a jour l'indicateur de statut"""
     if not hasattr(app, 'status_var') or not hasattr(app, 'root'):
         return
 
@@ -382,54 +340,43 @@ def _update_live_status(app):
 
         if ws_connected:
             status_text = f"En ligne ({users_count} utilisateur{'s' if users_count > 1 else ''})"
-            status_indicator = "●"
+            indicator = "●"
         elif is_live:
             status_text = "En ligne"
-            status_indicator = "●"
+            indicator = "●"
         else:
             status_text = "Hors ligne"
-            status_indicator = "○"
+            indicator = "○"
 
-        app.status_var.set(
-            f"Session : {app.current_user} | {status_indicator} {status_text}"
-        )
+        app.status_var.set(f"Session : {app.current_user} | {indicator} {status_text}")
 
-        # Mettre a jour la couleur de la barre de statut si possible
         if hasattr(app, 'status_label'):
-            fg_color = "green" if (is_live or ws_connected) else "red"
+            fg = "green" if (is_live or ws_connected) else "red"
             try:
-                app.status_label.config(foreground=fg_color)
+                app.status_label.config(foreground=fg)
             except Exception:
                 pass
-
-    except Exception as e:
+    except Exception:
         pass
 
 def _start_live_status_monitor(app):
-    """Demarre le moniteur de statut en direct et la synchronisation temps reel"""
+    """Demarre le moniteur de statut"""
     global _ptt_app_instance
     _ptt_app_instance = app
 
-    # Demarrer le moniteur de connexion HTTP
     _connection_monitor.start()
-
-    # Demarrer la synchronisation temps reel WebSocket
     _live_sync.on_data_changed(_on_data_changed)
     _start_live_sync()
 
-    # Fonction de mise a jour periodique du statut
     def update_loop():
         if _ptt_app_instance and hasattr(_ptt_app_instance, 'root'):
             _update_live_status(_ptt_app_instance)
             try:
-                _ptt_app_instance.root.after(5000, update_loop)  # Toutes les 5 secondes
+                _ptt_app_instance.root.after(5000, update_loop)
             except Exception:
                 pass
 
-    # Premiere mise a jour
     _update_live_status(app)
-
-    # Demarrer la boucle de mise a jour
     try:
         app.root.after(5000, update_loop)
     except Exception:
@@ -439,7 +386,7 @@ def _start_live_status_monitor(app):
 
 '''
 
-    # Patcher la methode update_status_bar_initial pour utiliser le statut live
+    # Patcher update_status_bar_initial
     patched_source = patched_source.replace(
         '''def update_status_bar_initial(self):
         """Initialise la barre de statut au démarrage (session + heure de lancement)."""
@@ -452,8 +399,7 @@ def _start_live_status_monitor(app):
         except Exception:
             pass''',
         '''def update_status_bar_initial(self):
-        """Initialise la barre de statut au demarrage avec statut live."""
-        # Mode client-serveur: utiliser le statut de connexion
+        """Initialise la barre de statut avec statut live."""
         _start_live_status_monitor(self)'''
     )
 
@@ -468,44 +414,33 @@ def _start_live_status_monitor(app):
 
 def main():
     """Point d'entree principal"""
-
-    # Afficher la fenetre de login
     print("TomatoPlan Client - Connexion au serveur...")
-    login = LoginWindow()
 
+    # Fenetre de login
+    login = LoginWindow()
     if not login.run():
-        print("Connexion annulee ou echouee")
+        print("Connexion annulee")
         return
 
-    print(f"Connecte en tant que: {get_current_user()}")
+    print(f"Connecte: {get_current_user()}")
     print("Chargement de l'application...")
 
-    # Patcher et lancer PTT
     try:
         ptt_path, patched_source = patch_ptt_module()
 
-        # Preparer l'environnement
         import builtins
-        original_input = builtins.input
-
-        # Compiler et executer
         code = compile(patched_source, str(ptt_path), "exec")
 
-        # Creer le namespace d'execution
         exec_globals = {
             "__name__": "__main__",
             "__file__": str(ptt_path),
             "__builtins__": builtins,
         }
 
-        # Ajouter le dossier client au path pour les imports
         if str(CLIENT_DIR) not in sys.path:
             sys.path.insert(0, str(CLIENT_DIR))
 
-        # Changer le repertoire de travail vers le dossier PTT
         os.chdir(ptt_path.parent)
-
-        # Executer PTT
         exec(code, exec_globals)
 
     except FileNotFoundError as e:
@@ -515,17 +450,14 @@ def main():
         traceback.print_exc()
         messagebox.showerror("Erreur", f"Erreur au lancement: {e}")
     finally:
-        # Arreter la synchronisation temps reel
         try:
             stop_live_sync()
         except Exception:
             pass
-        # Arreter le moniteur de connexion
         try:
             connection_monitor.stop()
         except Exception:
             pass
-        # Deconnexion
         try:
             api_client.logout()
         except Exception:
