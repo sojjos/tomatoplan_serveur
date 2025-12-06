@@ -221,7 +221,7 @@ async function confirmRestore() {
     if (!selectedBackup) return;
 
     try {
-        await apiCall(`/admin/backups/${selectedBackup}/restore`, 'POST');
+        await apiCall(`/admin/backups/restore/${selectedBackup}`, 'POST');
         closeRestoreModal();
         showToast('Restauration effectuée. Redémarrage du serveur...', 'success');
         setTimeout(() => {

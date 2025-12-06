@@ -390,11 +390,20 @@ async def root(request: Request):
     """)
 
 
+def get_template_context(request: Request, active: str = "dashboard"):
+    """Génère le contexte commun pour les templates"""
+    return {
+        "request": request,
+        "version": settings.app_version,
+        "active": active
+    }
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     """Page d'administration"""
     if templates:
-        return templates.TemplateResponse("index.html", {"request": request})
+        return templates.TemplateResponse("index.html", get_template_context(request, "dashboard"))
 
     return HTMLResponse("""
     <html>
@@ -412,7 +421,7 @@ async def admin_page(request: Request):
 async def admin_login_page(request: Request):
     """Page de connexion admin"""
     if templates:
-        return templates.TemplateResponse("login.html", {"request": request})
+        return templates.TemplateResponse("login.html", get_template_context(request, "login"))
 
     return HTMLResponse("""
     <html>
@@ -429,7 +438,7 @@ async def admin_login_page(request: Request):
 async def admin_users_page(request: Request):
     """Page de gestion des utilisateurs"""
     if templates:
-        return templates.TemplateResponse("users.html", {"request": request})
+        return templates.TemplateResponse("users.html", get_template_context(request, "users"))
     return HTMLResponse("Page non disponible", status_code=503)
 
 
@@ -437,7 +446,7 @@ async def admin_users_page(request: Request):
 async def admin_sessions_page(request: Request):
     """Page de gestion des sessions"""
     if templates:
-        return templates.TemplateResponse("sessions.html", {"request": request})
+        return templates.TemplateResponse("sessions.html", get_template_context(request, "sessions"))
     return HTMLResponse("Page non disponible", status_code=503)
 
 
@@ -445,7 +454,7 @@ async def admin_sessions_page(request: Request):
 async def admin_logs_page(request: Request):
     """Page des logs d'activité"""
     if templates:
-        return templates.TemplateResponse("logs.html", {"request": request})
+        return templates.TemplateResponse("logs.html", get_template_context(request, "logs"))
     return HTMLResponse("Page non disponible", status_code=503)
 
 
@@ -453,7 +462,7 @@ async def admin_logs_page(request: Request):
 async def admin_backups_page(request: Request):
     """Page de gestion des backups"""
     if templates:
-        return templates.TemplateResponse("backups.html", {"request": request})
+        return templates.TemplateResponse("backups.html", get_template_context(request, "backups"))
     return HTMLResponse("Page non disponible", status_code=503)
 
 
@@ -461,7 +470,7 @@ async def admin_backups_page(request: Request):
 async def admin_config_page(request: Request):
     """Page de configuration"""
     if templates:
-        return templates.TemplateResponse("config.html", {"request": request})
+        return templates.TemplateResponse("config.html", get_template_context(request, "config"))
     return HTMLResponse("Page non disponible", status_code=503)
 
 
@@ -475,7 +484,8 @@ async def health_check():
         uptime_seconds = int((datetime.now() - server_start_time).total_seconds())
 
     return {
-        "status": "healthy",
+        "status": "ok",
+        "healthy": True,
         "timestamp": datetime.now().isoformat(),
         "uptime_seconds": uptime_seconds,
         "uptime_formatted": format_uptime(uptime_seconds),
