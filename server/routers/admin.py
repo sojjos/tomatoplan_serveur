@@ -101,13 +101,13 @@ async def list_users(
     ]
 
 
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/users", status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("manage_rights"))
 ):
-    """Crée un nouvel utilisateur"""
+    """Crée un nouvel utilisateur avec un mot de passe temporaire"""
 
     # Normaliser le username
     normalized = AuthService.normalize_username(user_data.username)
@@ -132,12 +132,18 @@ async def create_user(
             detail=f"Rôle '{user_data.role_name}' non trouvé"
         )
 
+    # Générer un mot de passe temporaire
+    temp_password = AuthService.generate_temp_password()
+    password_hash = AuthService.hash_password(temp_password)
+
     user = User(
         username=normalized,
         display_name=user_data.display_name or normalized,
         email=user_data.email,
         role=role,
-        is_active=user_data.is_active
+        is_active=user_data.is_active,
+        password_hash=password_hash,
+        must_change_password=True
     )
 
     db.add(user)
@@ -164,7 +170,8 @@ async def create_user(
         "is_active": user.is_active,
         "is_system_admin": user.is_system_admin,
         "last_login": user.last_login,
-        "created_at": user.created_at
+        "created_at": user.created_at,
+        "temp_password": temp_password
     }
 
 
@@ -336,13 +343,19 @@ async def list_backups(
     ]
 
 
+class BackupCreate(BaseModel):
+    """Données pour créer un backup"""
+    description: Optional[str] = ""
+
+
 @router.post("/backups")
 async def create_backup(
-    description: str = Query("", description="Description du backup"),
+    backup_data: Optional[BackupCreate] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("admin_access"))
 ):
     """Crée un nouveau backup"""
+    description = backup_data.description if backup_data else ""
     result = await BackupService.create_backup(description)
 
     # Logger l'action
