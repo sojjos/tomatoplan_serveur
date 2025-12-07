@@ -861,9 +861,39 @@ def patch_and_run_ptt():
         "def _original_list_existing_dates():  # PATCHED"
     )
 
+    # Commenter les definitions de DATA_DIR et fichiers pour eviter OneDrive
+    patched_source = patched_source.replace(
+        '# Dossier de données OneDrive\nDATA_DIR = Path.home()',
+        '# PATCHED - OneDrive desactive\n_ORIGINAL_DATA_DIR = Path.home()'
+    )
+    patched_source = patched_source.replace(
+        'DATA_DIR = Path.home() / "OneDrive - STEF"',
+        '_DISABLED_DATA_DIR = None  # PATCHED\n# DATA_DIR = Path.home() / "OneDrive - STEF"'
+    )
+    patched_source = patched_source.replace(
+        "DATA_DIR.mkdir(parents=True, exist_ok=True)",
+        "pass  # PATCHED - DATA_DIR.mkdir"
+    )
+
     # Header avec les fonctions patchees - utilise les globals injectes
     header = '''
 # ===== PATCHED FOR CLIENT-SERVER MODE =====
+import tempfile
+from pathlib import Path
+
+# Remplacer DATA_DIR par un dossier temporaire local (pas OneDrive)
+DATA_DIR = Path(tempfile.gettempdir()) / "TomatoPlan_Client"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Chemins des fichiers (rediriges vers le dossier temp)
+MISSIONS_FILE = DATA_DIR / "missions.json"
+VOYAGES_FILE = DATA_DIR / "voyages.json"
+CHAUFFEURS_FILE = DATA_DIR / "chauffeurs.json"
+TARIFS_SST_FILE = DATA_DIR / "tarifs_sst.json"
+REVENUS_FILE = DATA_DIR / "revenus_palettes.json"
+SST_EMAILS_FILE = DATA_DIR / "sst_emails.json"
+ANNOUNCEMENT_CONFIG_FILE = DATA_DIR / "announcement_config.json"
+ANNOUNCEMENT_HISTORY_FILE = DATA_DIR / "announcement_history.json"
 
 # Ces variables sont injectees via exec_globals
 # _api_client, _connection_monitor, _live_sync, etc.
