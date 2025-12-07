@@ -842,26 +842,43 @@ def patch_and_run_ptt():
         "def _original_list_existing_dates():  # PATCHED"
     )
 
-    # Header avec les fonctions patchees
+    # Header avec les fonctions patchees - utilise les globals injectes
     header = '''
 # ===== PATCHED FOR CLIENT-SERVER MODE =====
-import sys as _sys
-_script_dir = __file__.replace("PTT_v0.6.0.py", "")
-if _script_dir not in _sys.path:
-    _sys.path.insert(0, _script_dir)
 
-from TomatoPlan import (
-    api_load_json as load_json,
-    api_save_json as save_json,
-    api_list_existing_dates as list_existing_dates,
-    api_get_planning_for_date,
-    ActivityLogger,
-    activity_logger,
-    api_client as _api_client,
-    connection_monitor as _connection_monitor,
-    is_online as _is_online,
-    live_sync as _live_sync,
-)
+# Ces variables sont injectees via exec_globals
+# _api_client, _connection_monitor, _live_sync, etc.
+
+def load_json(filename, default=None):
+    return _api_load_json(filename, default)
+
+def save_json(filename, data):
+    return _api_save_json(filename, data)
+
+def list_existing_dates():
+    return _api_list_existing_dates()
+
+class ActivityLogger:
+    _instance = None
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self.current_user = None
+        self.logs_dir = None
+    def initialize(self, root_dir, username):
+        self.current_user = username.upper()
+    def log_action(self, action_type, details=None, before_state=None, after_state=None):
+        pass
+    def log_session_end(self):
+        pass
+
+activity_logger = ActivityLogger()
 
 _ptt_app_instance = None
 
@@ -887,7 +904,7 @@ def _update_live_status(app):
     if not hasattr(app, 'status_var') or not hasattr(app, 'root'):
         return
     try:
-        is_live = _is_online()
+        is_live = _connection_monitor.is_online
         ws_connected = _live_sync.is_connected
         users_count = _live_sync.connected_users_count
         if ws_connected:
@@ -950,13 +967,23 @@ def _start_live_status_monitor(app):
 
     patched_source = header + patched_source
 
-    # Executer
+    # Executer avec les objets authentifies injectes directement
     import builtins
     code = compile(patched_source, str(ptt_path), "exec")
+
+    # Injecter les objets directement dans le namespace d'execution
     exec_globals = {
         "__name__": "__main__",
         "__file__": str(ptt_path),
         "__builtins__": builtins,
+        # Injecter les objets authentifies
+        "_api_client": api_client,
+        "_connection_monitor": connection_monitor,
+        "_live_sync": live_sync,
+        "_api_load_json": api_load_json,
+        "_api_save_json": api_save_json,
+        "_api_list_existing_dates": api_list_existing_dates,
+        "_api_get_planning_for_date": api_get_planning_for_date,
     }
 
     if str(script_dir) not in sys.path:
