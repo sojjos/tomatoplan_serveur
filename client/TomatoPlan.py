@@ -1009,7 +1009,18 @@ def _start_live_status_monitor(app):
         sys.path.insert(0, str(script_dir))
 
     os.chdir(ptt_path.parent)
-    exec(code, exec_globals)
+
+    # Executer PTT avec gestion d'erreur detaillee
+    try:
+        exec(code, exec_globals)
+    except Exception as e:
+        import traceback
+        print("\n" + "="*50)
+        print("ERREUR LORS DE L'EXECUTION DE PTT:")
+        print("="*50)
+        traceback.print_exc()
+        print("="*50 + "\n")
+        raise
 
 
 # ===========================================================================
